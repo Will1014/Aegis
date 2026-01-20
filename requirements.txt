@@ -1,0 +1,23 @@
+# MTFI Prototype - Python Requirements
+# Install with: pip install -r requirements.txt
+
+# API & Data
+requests>=2.28.0
+pandas>=1.5.0
+numpy>=1.23.0
+
+# Jupyter Notebooks
+jupyter>=1.0.0
+jupyterlab>=3.5.0
+ipykernel>=6.0.0
+
+# Data visualization (for initial exploration)
+matplotlib>=3.6.0
+seaborn>=0.12.0
+plotly>=5.10.0
+
+# JSON handling
+jsonschema>=4.0.0
+
+# Optional: for environment management
+python-dotenv>=0.21.0
