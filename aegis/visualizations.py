@@ -8,6 +8,7 @@ import json
 import csv
 from pathlib import Path
 from typing import Dict, List, Optional
+from datetime import datetime
 
 from .config import Config
 
@@ -105,64 +106,657 @@ class AegisVisualizer:
     # INTERACTIVE HTML DASHBOARD
     # =========================================================================
     
-    def generate_dashboard(self, filename: str = "AEGIS_Dashboard.html"):
+    def generate_dashboard(
+        self,
+        filename: str = "MTFI_Dashboard.html",
+        manager_name: Optional[str] = None,
+        target_club: Optional[str] = None,
+        season: str = "2024/25"
+    ):
         """
-        Generate standalone interactive HTML dashboard.
+        Generate MTFI Dashboard v2 with clustering visualization.
         
-        Creates a single HTML file with embedded React that opens
-        in any browser - no development environment needed.
+        This is the advanced dashboard with:
+        - Manager DNA radar chart
+        - PCA cluster scatter plot
+        - Ideal XI pitch visualization
+        - Positional fit analysis bars
+        - Recruitment priorities table
+        - Full squad fit scores
         
         Args:
-            filename: Output filename (default: AEGIS_Dashboard.html)
+            filename: Output filename (default: MTFI_Dashboard.html)
+            manager_name: Override manager name (auto-detected if None)
+            target_club: Override target club (auto-detected if None)
+            season: Season label for display
         
         Returns:
             Path to generated dashboard file
         """
-        if not self.results:
-            raise ValueError("No results loaded. Call load_results() first.")
+        print("\n" + "=" * 50)
+        print("GENERATING MTFI DASHBOARD v2")
+        print("=" * 50)
         
-        print("\nGenerating interactive dashboard...")
+        # Load data files
+        print("\n[1/3] Loading data files...")
         
-        # Prepare data for embedding
-        manager = self.results.get("manager", "Unknown")
-        primary_formation = self.results.get("primary_formation", "4-3-3")
-        matches = self.results.get("matches_analysed", 0)
-        dna_dimensions = self.results.get("dna_dimensions", {})
-        squad_summary = self.results.get("squad_summary", {})
-        ideal_xi = self.results.get("ideal_xi", [])
-        recruitment = self.results.get("recruitment", [])
+        manager_profiles = self._load_csv("manager_profiles.csv")
+        cluster_centroids = self._load_csv("cluster_centroids.csv")
+        squad_fit = self._load_csv("squad_fit_scores.csv")
+        ideal_xi = self._load_csv("ideal_xi.csv")
+        recruitment = self._load_csv("recruitment_priorities.csv")
+        positional_gaps = self._load_csv("positional_gaps.csv")
         
-        # Load squad fit data
-        squad_fit = []
-        if self.squad_fit_data:
-            for p in self.squad_fit_data:
-                squad_fit.append({
-                    "name": p.get("Name", "Unknown"),
-                    "position": p.get("Position", "Unknown"),
-                    "age": int(p.get("Age", 25)),
-                    "score": float(p.get("Fit Score", 0)),
-                    "classification": p.get("Classification", "Unknown")
-                })
+        # Try to load summary JSON
+        summary = {}
+        summary_path = self.output_dir / "squad_fit_summary.json"
+        aegis_summary_path = self.output_dir / "aegis_analysis.json"
+        
+        if summary_path.exists():
+            with open(summary_path) as f:
+                summary = json.load(f)
+            print(f"  ✓ Loaded: squad_fit_summary.json")
+        elif aegis_summary_path.exists():
+            with open(aegis_summary_path) as f:
+                summary = json.load(f)
+            print(f"  ✓ Loaded: aegis_analysis.json")
+        
+        # Determine manager and club
+        print("\n[2/3] Processing data...")
+        
+        if not manager_name:
+            manager_name = summary.get("target_manager") or summary.get("manager") or "Unknown Manager"
+        
+        if not target_club:
+            target_club = summary.get("target_club") or summary.get("club") or "Target Club"
+        
+        print(f"  Manager: {manager_name}")
+        print(f"  Club: {target_club}")
         
         # Generate HTML
-        html_content = self._generate_dashboard_html(
-            manager=manager,
-            primary_formation=primary_formation,
-            matches=matches,
-            dna_dimensions=dna_dimensions,
-            squad_summary=squad_summary,
+        print("\n[3/3] Generating HTML...")
+        
+        html = self._generate_dashboard_v2_html(
+            manager_profiles=manager_profiles,
+            cluster_centroids=cluster_centroids,
             squad_fit=squad_fit,
             ideal_xi=ideal_xi,
-            recruitment=recruitment
+            recruitment=recruitment,
+            positional_gaps=positional_gaps,
+            manager_name=manager_name,
+            target_club=target_club,
+            season=season
         )
         
         # Save
         output_path = self.output_dir / filename
         with open(output_path, "w", encoding="utf-8") as f:
-            f.write(html_content)
+            f.write(html)
         
-        print(f"✓ Dashboard saved: {output_path}")
+        print(f"\n✓ Dashboard saved: {output_path}")
+        print("=" * 50)
+        
         return output_path
+    
+    def _load_csv(self, filename: str) -> List[Dict]:
+        """Load CSV file from output directory."""
+        filepath = self.output_dir / filename
+        
+        # Also check training directory for manager profiles
+        if not filepath.exists() and filename in ["manager_profiles.csv", "cluster_centroids.csv"]:
+            training_dir = self.output_dir.parent / "processed" / "training"
+            filepath = training_dir / filename
+        
+        if not filepath.exists():
+            print(f"  ⚠ Not found: {filename}")
+            return []
+        
+        with open(filepath, newline='', encoding='utf-8') as f:
+            reader = csv.DictReader(f)
+            data = list(reader)
+        
+        print(f"  ✓ Loaded: {filename} ({len(data)} rows)")
+        return data
+    
+    def _safe_float(self, val, default=0.0):
+        """Safely convert to float."""
+        try:
+            return float(val) if val else default
+        except (ValueError, TypeError):
+            return default
+    
+    def _safe_int(self, val, default=0):
+        """Safely convert to int."""
+        try:
+            return int(float(val)) if val else default
+        except (ValueError, TypeError):
+            return default
+    
+    def _generate_dashboard_v2_html(
+        self,
+        manager_profiles: List[Dict],
+        cluster_centroids: List[Dict],
+        squad_fit: List[Dict],
+        ideal_xi: List[Dict],
+        recruitment: List[Dict],
+        positional_gaps: List[Dict],
+        manager_name: str,
+        target_club: str,
+        season: str
+    ) -> str:
+        """Generate the MTFI Dashboard v2 HTML."""
+        from datetime import datetime
+        
+        # Find target manager in profiles
+        target_manager_data = None
+        for m in manager_profiles:
+            if manager_name.lower() in m.get("coach_name", "").lower():
+                target_manager_data = m
+                break
+        
+        if not target_manager_data and manager_profiles:
+            target_manager_data = manager_profiles[0]
+        
+        # Process clusters
+        clusters_js = []
+        cluster_colors = ['#3B82F6', '#EF4444', '#22C55E', '#8B5CF6', '#F59E0B', '#EC4899', '#14B8A6']
+        for i, c in enumerate(cluster_centroids):
+            clusters_js.append({
+                "id": self._safe_int(c.get("cluster")),
+                "name": c.get("cluster_name", f"Cluster {c.get('cluster')}"),
+                "color": cluster_colors[i % len(cluster_colors)]
+            })
+        
+        # Process managers for scatter
+        managers_js = []
+        for m in manager_profiles:
+            managers_js.append({
+                "name": m.get("coach_name", "Unknown"),
+                "team": m.get("team_name", "Unknown"),
+                "pca1": self._safe_float(m.get("pca_1")),
+                "pca2": self._safe_float(m.get("pca_2")),
+                "cluster": self._safe_int(m.get("cluster"))
+            })
+        
+        # Process squad fit
+        squad_js = []
+        for p in squad_fit:
+            squad_js.append({
+                "name": p.get("name") or p.get("Name", "Unknown"),
+                "position": p.get("position") or p.get("Position", "Unknown"),
+                "group": p.get("position_group", "MID"),
+                "fit": self._safe_float(p.get("fit_score") or p.get("Fit Score")),
+                "classification": p.get("classification") or p.get("Classification", "Unknown")
+            })
+        
+        # Process ideal XI
+        pitch_positions = {
+            "GK": {"x": 50, "y": 90}, "LB": {"x": 15, "y": 68},
+            "CB1": {"x": 35, "y": 73}, "CB": {"x": 35, "y": 73}, "CB2": {"x": 65, "y": 73},
+            "RB": {"x": 85, "y": 68}, "DM": {"x": 50, "y": 52},
+            "CM": {"x": 30, "y": 40}, "AM": {"x": 70, "y": 40},
+            "LW": {"x": 15, "y": 22}, "CF": {"x": 50, "y": 15}, "RW": {"x": 85, "y": 22}
+        }
+        
+        ideal_js = []
+        cb_count = 0
+        for p in ideal_xi:
+            slot = p.get("slot") or p.get("position", "")
+            if slot == "CB":
+                cb_count += 1
+                pos_key = "CB1" if cb_count == 1 else "CB2"
+            else:
+                pos_key = slot
+            pos = pitch_positions.get(pos_key, {"x": 50, "y": 50})
+            ideal_js.append({
+                "slot": slot,
+                "name": p.get("name", "Unknown"),
+                "fit": self._safe_float(p.get("fit_score")),
+                "x": pos["x"], "y": pos["y"]
+            })
+        
+        # Process positional gaps (or generate from squad)
+        gaps_js = []
+        if positional_gaps:
+            for g in positional_gaps:
+                gaps_js.append({
+                    "position": g.get("position", "Unknown"),
+                    "avgFit": self._safe_float(g.get("avg_fit") or g.get("avgFit")),
+                    "maxFit": self._safe_float(g.get("max_fit") or g.get("maxFit")),
+                    "count": self._safe_int(g.get("count")),
+                    "gap": self._safe_float(g.get("gap"))
+                })
+        elif squad_js:
+            # Generate from squad data
+            position_stats = {}
+            for p in squad_js:
+                pos = p["position"]
+                if pos not in position_stats:
+                    position_stats[pos] = {"fits": [], "max": 0}
+                position_stats[pos]["fits"].append(p["fit"])
+                position_stats[pos]["max"] = max(position_stats[pos]["max"], p["fit"])
+            
+            for pos, stats in position_stats.items():
+                avg = sum(stats["fits"]) / len(stats["fits"])
+                gaps_js.append({
+                    "position": pos,
+                    "avgFit": round(avg, 1),
+                    "maxFit": stats["max"],
+                    "count": len(stats["fits"]),
+                    "gap": round(max(0, 75 - avg), 1)
+                })
+            gaps_js.sort(key=lambda x: x["avgFit"], reverse=True)
+        
+        # Process recruitment
+        recruit_js = []
+        for i, r in enumerate(recruitment):
+            recruit_js.append({
+                "rank": i + 1,
+                "position": r.get("position") or r.get("Position", "Unknown"),
+                "urgency": r.get("urgency") or r.get("Urgency", "Medium"),
+                "timeline": r.get("timeline") or r.get("Timeline", "Summer"),
+                "gap": self._safe_float(r.get("gap") or r.get("Gap")),
+                "costLow": self._safe_int(r.get("cost_low") or r.get("Cost Low")),
+                "costHigh": self._safe_int(r.get("cost_high") or r.get("Cost High"))
+            })
+        
+        # Build manager data
+        manager_js = {
+            "name": manager_name,
+            "team": target_club,
+            "cluster": self._safe_int(target_manager_data.get("cluster")) if target_manager_data else 0,
+            "clusterName": target_manager_data.get("cluster_name", "Unknown") if target_manager_data else "Unknown",
+            "goalsScored": self._safe_float(target_manager_data.get("goals_scored", 1.5)) if target_manager_data else 1.5,
+            "goalsConceded": self._safe_float(target_manager_data.get("goals_conceded", 1.5)) if target_manager_data else 1.5,
+            "cleanSheetPct": self._safe_float(target_manager_data.get("clean_sheet_pct", 25)) if target_manager_data else 25,
+            "winRate": self._safe_float(target_manager_data.get("win_rate", 33)) if target_manager_data else 33,
+            "possession": self._safe_float(target_manager_data.get("possession", 50)) if target_manager_data else 50,
+            "passAccuracy": self._safe_float(target_manager_data.get("pass_accuracy", 80)) if target_manager_data else 80,
+            "shots": self._safe_float(target_manager_data.get("shots", 12)) if target_manager_data else 12,
+            "tackles": self._safe_float(target_manager_data.get("tackles", 15)) if target_manager_data else 15,
+            "interceptions": self._safe_float(target_manager_data.get("interceptions", 10)) if target_manager_data else 10
+        }
+        
+        # JSON encode
+        manager_json = json.dumps(manager_js)
+        clusters_json = json.dumps(clusters_js)
+        managers_json = json.dumps(managers_js)
+        squad_json = json.dumps(squad_js)
+        ideal_json = json.dumps(ideal_js)
+        gaps_json = json.dumps(gaps_js)
+        recruit_json = json.dumps(recruit_js)
+        
+        # Generate the HTML (inline React dashboard)
+        html = self._get_dashboard_v2_template(
+            manager_json=manager_json,
+            clusters_json=clusters_json,
+            managers_json=managers_json,
+            squad_json=squad_json,
+            ideal_json=ideal_json,
+            gaps_json=gaps_json,
+            recruit_json=recruit_json,
+            season=season,
+            generated_at=datetime.now().strftime("%Y-%m-%d %H:%M")
+        )
+        
+        return html
+    
+    def _get_dashboard_v2_template(
+        self,
+        manager_json: str,
+        clusters_json: str,
+        managers_json: str,
+        squad_json: str,
+        ideal_json: str,
+        gaps_json: str,
+        recruit_json: str,
+        season: str,
+        generated_at: str
+    ) -> str:
+        """Return the full HTML template for Dashboard v2."""
+        return f'''<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MTFI Dashboard v2</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <style>body {{ margin: 0; }} * {{ box-sizing: border-box; }}</style>
+</head>
+<body>
+    <div id="root"></div>
+    <script type="text/babel">
+const {{ useState }} = React;
+
+const MTFIDashboard = () => {{
+  const managerData = {manager_json};
+  const clusters = {clusters_json};
+  const allManagers = {managers_json};
+  const squadFit = {squad_json};
+  const idealXI = {ideal_json};
+  const positionGaps = {gaps_json};
+  const recruitment = {recruit_json};
+  const season = "{season}";
+
+  const totalPlayers = squadFit.length;
+  const keyEnablers = squadFit.filter(p => p.fit >= 75).length;
+  const goodFit = squadFit.filter(p => p.fit >= 60 && p.fit < 75).length;
+  const systemDependent = squadFit.filter(p => p.fit >= 45 && p.fit < 60).length;
+  const marginalised = squadFit.filter(p => p.fit < 45).length;
+  const avgFit = totalPlayers > 0 ? (squadFit.reduce((a, b) => a + b.fit, 0) / totalPlayers).toFixed(1) : 0;
+  const investmentLow = recruitment.reduce((a, b) => a + (b.costLow || 0), 0);
+  const investmentHigh = recruitment.reduce((a, b) => a + (b.costHigh || 0), 0);
+
+  const getFitColor = (score) => {{
+    if (score >= 75) return '#22C55E';
+    if (score >= 60) return '#84CC16';
+    if (score >= 45) return '#EAB308';
+    if (score >= 30) return '#F97316';
+    return '#EF4444';
+  }};
+
+  const getClassificationColor = (cls) => ({{
+    'Key Enabler': '#22C55E', 'Good Fit': '#84CC16',
+    'System Dependent': '#EAB308', 'Potentially Marginalised': '#EF4444'
+  }})[cls] || '#64748B';
+
+  const KPICard = ({{ title, value, subtitle, color, icon }}) => (
+    <div className="bg-slate-800/60 backdrop-blur border border-slate-700/50 rounded-xl p-4">
+      <div className="flex items-start justify-between">
+        <div>
+          <div className="text-slate-400 text-xs uppercase tracking-wider font-medium">{{title}}</div>
+          <div className={{`text-2xl font-bold mt-1 ${{color || 'text-white'}}`}}>{{value}}</div>
+          {{subtitle && <div className="text-slate-500 text-sm mt-1">{{subtitle}}</div>}}
+        </div>
+        {{icon && <div className="text-2xl opacity-50">{{icon}}</div>}}
+      </div>
+    </div>
+  );
+
+  const ClusterScatter = () => {{
+    if (allManagers.length === 0) return <div className="text-slate-500 text-center py-8">No manager data</div>;
+    const minX = Math.min(...allManagers.map(m => m.pca1)) - 0.5;
+    const maxX = Math.max(...allManagers.map(m => m.pca1)) + 0.5;
+    const minY = Math.min(...allManagers.map(m => m.pca2)) - 0.5;
+    const maxY = Math.max(...allManagers.map(m => m.pca2)) + 0.5;
+    const scaleX = (val) => ((val - minX) / (maxX - minX)) * 100;
+    const scaleY = (val) => 100 - ((val - minY) / (maxY - minY)) * 100;
+    const clusterColors = {{}};
+    clusters.forEach(c => {{ clusterColors[c.id] = c.color; }});
+    return (
+      <div className="flex flex-col h-full">
+        <div className="relative flex-1 bg-slate-900/50 rounded-xl min-h-[220px]">
+          {{allManagers.map((m, i) => (
+            <div key={{i}}
+              className={{`absolute w-3.5 h-3.5 rounded-full transform -translate-x-1/2 -translate-y-1/2 cursor-pointer transition-all hover:scale-150 hover:z-20 ${{m.name === managerData.name ? 'ring-2 ring-white ring-offset-1 ring-offset-slate-900 z-10 w-5 h-5' : ''}}`}}
+              style={{{{ left: `${{2 + scaleX(m.pca1) * 0.96}}%`, top: `${{2 + scaleY(m.pca2) * 0.96}}%`, backgroundColor: clusterColors[m.cluster] || '#64748B' }}}}
+              title={{`${{m.name}} (${{m.team}})`}}>
+              {{m.name === managerData.name && (
+                <div className="absolute -top-5 left-1/2 -translate-x-1/2 text-xs font-bold text-white whitespace-nowrap bg-slate-800/90 px-1.5 py-0.5 rounded">{{managerData.name}}</div>
+              )}}
+            </div>
+          ))}}
+        </div>
+        <div className="flex flex-wrap justify-center gap-x-4 gap-y-1 mt-3 pt-3 border-t border-slate-700/50">
+          {{clusters.map((c) => (
+            <div key={{c.id}} className="flex items-center gap-1.5">
+              <div className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{{{ backgroundColor: c.color }}}} />
+              <span className="text-slate-400 text-xs">{{c.name}}</span>
+            </div>
+          ))}}
+        </div>
+      </div>
+    );
+  }};
+
+  const FormationPitch = () => (
+    <div className="relative w-full aspect-[3/4] bg-gradient-to-b from-emerald-900/90 to-emerald-800/90 rounded-xl overflow-hidden border border-emerald-700/30">
+      <div className="absolute inset-3 border-2 border-white/20 rounded">
+        <div className="absolute top-1/2 left-0 right-0 h-0.5 bg-white/20" />
+        <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-14 h-14 border-2 border-white/20 rounded-full" />
+        <div className="absolute top-0 left-1/2 -translate-x-1/2 w-28 h-10 border-2 border-t-0 border-white/20" />
+        <div className="absolute bottom-0 left-1/2 -translate-x-1/2 w-28 h-10 border-2 border-b-0 border-white/20" />
+      </div>
+      {{idealXI.map((player, i) => (
+        <div key={{i}} className="absolute transform -translate-x-1/2 -translate-y-1/2 text-center group" style={{{{ left: `${{player.x}}%`, top: `${{player.y}}%` }}}}>
+          <div className="w-9 h-9 rounded-full flex items-center justify-center text-white font-bold text-xs border-2 shadow-lg transition-transform group-hover:scale-110"
+            style={{{{ backgroundColor: getFitColor(player.fit), borderColor: 'rgba(255,255,255,0.3)' }}}}>
+            {{Math.round(player.fit)}}
+          </div>
+          <div className="text-white text-xs mt-1 font-medium drop-shadow-lg opacity-90">{{player.name.split(' ').pop()}}</div>
+          <div className="text-white/60 text-xs">{{player.slot}}</div>
+        </div>
+      ))}}
+    </div>
+  );
+
+  const PositionFitBars = () => (
+    <div className="space-y-2">
+      {{positionGaps.map((pos, i) => (
+        <div key={{i}} className="flex items-center gap-3">
+          <div className="w-28 text-sm text-slate-300 truncate">{{pos.position}}</div>
+          <div className="flex-1 h-5 bg-slate-700/50 rounded-full overflow-hidden relative">
+            <div className="h-full rounded-full" style={{{{ width: `${{Math.min(pos.avgFit, 100)}}%`, backgroundColor: getFitColor(pos.avgFit) }}}} />
+            {{pos.maxFit > 0 && <div className="absolute top-0 h-full w-0.5 bg-white/60" style={{{{ left: `${{Math.min(pos.maxFit, 100)}}%` }}}} />}}
+            <div className="absolute top-0 h-full w-px bg-white/30 left-3/4" />
+          </div>
+          <div className="w-10 text-right font-mono text-sm text-slate-300">{{pos.avgFit.toFixed(1)}}</div>
+          <div className="w-6 text-center text-slate-500 text-xs">({{pos.count}})</div>
+        </div>
+      ))}}
+    </div>
+  );
+
+  const SquadTable = () => (
+    <div className="overflow-auto max-h-80">
+      <table className="w-full text-sm">
+        <thead className="sticky top-0 bg-slate-800">
+          <tr className="text-slate-400 text-xs uppercase tracking-wider">
+            <th className="px-3 py-2 text-left">Player</th>
+            <th className="px-3 py-2 text-left">Position</th>
+            <th className="px-3 py-2 text-center">Fit</th>
+            <th className="px-3 py-2 text-left">Classification</th>
+          </tr>
+        </thead>
+        <tbody>
+          {{[...squadFit].sort((a, b) => b.fit - a.fit).map((player, i) => (
+            <tr key={{i}} className="border-t border-slate-700/30 hover:bg-slate-700/20">
+              <td className="px-3 py-2 font-medium">{{player.name}}</td>
+              <td className="px-3 py-2 text-slate-400">{{player.position}}</td>
+              <td className="px-3 py-2 text-center">
+                <span className="inline-block w-10 py-0.5 rounded text-xs font-bold" style={{{{ backgroundColor: getFitColor(player.fit) + '30', color: getFitColor(player.fit) }}}}>{{player.fit.toFixed(0)}}</span>
+              </td>
+              <td className="px-3 py-2">
+                <span className="text-xs px-2 py-0.5 rounded" style={{{{ backgroundColor: getClassificationColor(player.classification) + '20', color: getClassificationColor(player.classification) }}}}>{{player.classification}}</span>
+              </td>
+            </tr>
+          ))}}
+        </tbody>
+      </table>
+    </div>
+  );
+
+  const RecruitmentTable = () => (
+    <div>
+      <table className="w-full text-sm">
+        <thead className="bg-slate-700/30">
+          <tr className="text-slate-400 text-xs uppercase tracking-wider">
+            <th className="px-4 py-3 text-left">#</th>
+            <th className="px-4 py-3 text-left">Position</th>
+            <th className="px-4 py-3 text-center">Urgency</th>
+            <th className="px-4 py-3 text-center">Gap</th>
+            <th className="px-4 py-3 text-center">Window</th>
+            <th className="px-4 py-3 text-right">Est. Cost</th>
+          </tr>
+        </thead>
+        <tbody>
+          {{recruitment.map((r, i) => (
+            <tr key={{i}} className="border-t border-slate-700/30 hover:bg-slate-700/20">
+              <td className="px-4 py-3 font-bold text-slate-500">{{r.rank}}</td>
+              <td className="px-4 py-3 font-medium">{{r.position}}</td>
+              <td className="px-4 py-3 text-center">
+                <span className={{`px-2 py-1 rounded text-xs font-medium ${{r.urgency === 'Critical' ? 'bg-red-500/20 text-red-400' : r.urgency === 'High' ? 'bg-orange-500/20 text-orange-400' : 'bg-amber-500/20 text-amber-400'}}`}}>{{r.urgency}}</span>
+              </td>
+              <td className="px-4 py-3 text-center font-mono">{{r.gap.toFixed(1)}}</td>
+              <td className="px-4 py-3 text-center text-slate-400">{{r.timeline}}</td>
+              <td className="px-4 py-3 text-right font-mono">£{{r.costLow}}-{{r.costHigh}}M</td>
+            </tr>
+          ))}}
+        </tbody>
+        {{recruitment.length > 0 && (
+          <tfoot className="bg-slate-700/20 border-t border-slate-600/50">
+            <tr>
+              <td colSpan={{5}} className="px-4 py-3 text-right font-medium text-slate-300">Total Investment</td>
+              <td className="px-4 py-3 text-right font-bold text-lg text-white">£{{investmentLow}}-{{investmentHigh}}M</td>
+            </tr>
+          </tfoot>
+        )}}
+      </table>
+    </div>
+  );
+
+  const ManagerDNARadar = () => {{
+    const dimensions = [
+      {{ label: 'Possession', value: managerData.possession || 50 }},
+      {{ label: 'Passing', value: managerData.passAccuracy || 80 }},
+      {{ label: 'Attacking', value: ((managerData.goalsScored || 1.5) / 2.5) * 100 }},
+      {{ label: 'Pressing', value: (((managerData.tackles || 15) + (managerData.interceptions || 10)) / 35) * 100 }},
+      {{ label: 'Defence', value: 100 - ((managerData.goalsConceded || 1.5) / 3) * 100 }},
+      {{ label: 'Clean Sheets', value: (managerData.cleanSheetPct || 25) * 2 }},
+      {{ label: 'Win Rate', value: (managerData.winRate || 33) * 2 }},
+      {{ label: 'Shots', value: ((managerData.shots || 12) / 18) * 100 }},
+    ];
+    const n = dimensions.length;
+    const angleStep = (2 * Math.PI) / n;
+    const centerX = 120, centerY = 120, maxRadius = 90;
+    const points = dimensions.map((d, i) => {{
+      const angle = i * angleStep - Math.PI / 2;
+      const radius = (Math.min(d.value, 100) / 100) * maxRadius;
+      return {{ x: centerX + Math.cos(angle) * radius, y: centerY + Math.sin(angle) * radius }};
+    }});
+    const polygonPoints = points.map(p => `${{p.x}},${{p.y}}`).join(' ');
+    return (
+      <div className="flex flex-col items-center">
+        <svg width="240" height="240" className="overflow-visible">
+          {{[25, 50, 75, 100].map((level) => (<circle key={{level}} cx={{centerX}} cy={{centerY}} r={{(level / 100) * maxRadius}} fill="none" stroke="#334155" strokeWidth="1" opacity="0.5" />))}}
+          {{dimensions.map((_, i) => {{ const angle = i * angleStep - Math.PI / 2; return (<line key={{i}} x1={{centerX}} y1={{centerY}} x2={{centerX + Math.cos(angle) * maxRadius}} y2={{centerY + Math.sin(angle) * maxRadius}} stroke="#334155" strokeWidth="1" opacity="0.5" />); }})}}
+          <polygon points={{polygonPoints}} fill="#F59E0B" fillOpacity="0.3" stroke="#F59E0B" strokeWidth="2" />
+          {{points.map((p, i) => (<circle key={{i}} cx={{p.x}} cy={{p.y}} r="4" fill="#F59E0B" stroke="#FCD34D" strokeWidth="2" />))}}
+          {{dimensions.map((d, i) => {{ const angle = i * angleStep - Math.PI / 2; const labelRadius = maxRadius + 20; const x = centerX + Math.cos(angle) * labelRadius; const y = centerY + Math.sin(angle) * labelRadius; return (<text key={{i}} x={{x}} y={{y}} textAnchor="middle" dominantBaseline="middle" className="text-xs fill-slate-400">{{d.label}}</text>); }})}}
+        </svg>
+        <div className="mt-4 px-4 py-2 rounded-full bg-amber-500/20 border border-amber-500/50">
+          <span className="text-amber-400 font-semibold">Cluster: {{managerData.clusterName}}</span>
+        </div>
+      </div>
+    );
+  }};
+
+  return (
+    <div className="min-h-screen bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950 text-white">
+      <div className="border-b border-slate-800 bg-slate-900/50 backdrop-blur sticky top-0 z-30">
+        <div className="max-w-7xl mx-auto px-6 py-4">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-4">
+              <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-amber-500 to-orange-600 flex items-center justify-center font-black text-lg">A</div>
+              <div>
+                <h1 className="text-xl font-bold tracking-tight">Manager Tactical Fit Intelligence</h1>
+                <p className="text-slate-400 text-sm">Aegis Football Advisory Group</p>
+              </div>
+            </div>
+            <div className="text-right">
+              <div className="text-lg font-semibold">{{managerData.name}} → {{managerData.team}}</div>
+              <div className="text-slate-400 text-sm">{{season}} Season Analysis</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div className="max-w-7xl mx-auto px-6 py-6">
+        <div className="grid grid-cols-2 md:grid-cols-6 gap-4 mb-6">
+          <KPICard title="Squad Avg Fit" value={{`${{avgFit}}%`}} subtitle={{`${{totalPlayers}} players`}} icon="📊" />
+          <KPICard title="Key Enablers" value={{keyEnablers}} subtitle="≥75" color="text-emerald-400" icon="🟢" />
+          <KPICard title="Good Fit" value={{goodFit}} subtitle="60-74" color="text-lime-400" icon="🟡" />
+          <KPICard title="System Dependent" value={{systemDependent}} subtitle="45-59" color="text-amber-400" icon="🟠" />
+          <KPICard title="Marginalised" value={{marginalised}} subtitle="<45" color="text-red-400" icon="🔴" />
+          <KPICard title="Investment Req." value={{`£${{investmentLow}}-${{investmentHigh}}M`}} subtitle={{`${{recruitment.length}} priorities`}} icon="💰" />
+        </div>
+
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-6">
+          <div className="bg-slate-800/40 backdrop-blur border border-slate-700/50 rounded-2xl p-5">
+            <h2 className="text-lg font-semibold mb-2 flex items-center gap-2"><span className="w-2 h-2 rounded-full bg-amber-500"></span>Manager DNA</h2>
+            <div className="text-center mb-2">
+              <div className="text-xl font-bold">{{managerData.name}}</div>
+              <div className="text-slate-400 text-sm">{{managerData.team}}</div>
+            </div>
+            <ManagerDNARadar />
+            <div className="grid grid-cols-2 gap-2 mt-4 text-sm">
+              <div className="bg-slate-700/30 rounded-lg p-2 text-center">
+                <div className="text-slate-400 text-xs">Goals/Game</div>
+                <div className="font-bold text-lg">{{managerData.goalsScored?.toFixed(2) || 'N/A'}}</div>
+              </div>
+              <div className="bg-slate-700/30 rounded-lg p-2 text-center">
+                <div className="text-slate-400 text-xs">Conceded/Game</div>
+                <div className="font-bold text-lg">{{managerData.goalsConceded?.toFixed(2) || 'N/A'}}</div>
+              </div>
+            </div>
+          </div>
+
+          <div className="bg-slate-800/40 backdrop-blur border border-slate-700/50 rounded-2xl p-5 flex flex-col">
+            <h2 className="text-lg font-semibold mb-4 flex items-center gap-2"><span className="w-2 h-2 rounded-full bg-violet-500"></span>Manager Clustering (PCA)</h2>
+            <ClusterScatter />
+            <div className="mt-3 text-sm">
+              <span className="text-amber-400 font-semibold">{{managerData.name}}</span>
+              <span className="text-slate-400"> clusters with </span>
+              <span className="text-white font-semibold">{{managerData.clusterName}}</span>
+              <span className="text-slate-400"> managers</span>
+            </div>
+          </div>
+
+          <div className="bg-slate-800/40 backdrop-blur border border-slate-700/50 rounded-2xl p-5">
+            <h2 className="text-lg font-semibold mb-4 flex items-center gap-2"><span className="w-2 h-2 rounded-full bg-emerald-500"></span>Ideal XI (4-3-3)</h2>
+            <FormationPitch />
+            <div className="mt-3 flex justify-center gap-3 text-xs flex-wrap">
+              <div className="flex items-center gap-1"><div className="w-3 h-3 rounded-full bg-emerald-500"></div><span className="text-slate-400">≥75</span></div>
+              <div className="flex items-center gap-1"><div className="w-3 h-3 rounded-full bg-lime-500"></div><span className="text-slate-400">60-74</span></div>
+              <div className="flex items-center gap-1"><div className="w-3 h-3 rounded-full bg-yellow-500"></div><span className="text-slate-400">45-59</span></div>
+              <div className="flex items-center gap-1"><div className="w-3 h-3 rounded-full bg-red-500"></div><span className="text-slate-400">&lt;45</span></div>
+            </div>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          <div className="bg-slate-800/40 backdrop-blur border border-slate-700/50 rounded-2xl p-5">
+            <h2 className="text-lg font-semibold mb-4 flex items-center gap-2"><span className="w-2 h-2 rounded-full bg-blue-500"></span>Positional Fit Analysis</h2>
+            {{positionGaps.length > 0 ? <PositionFitBars /> : <div className="text-slate-500 text-center py-4">No positional data</div>}}
+          </div>
+
+          <div className="bg-slate-800/40 backdrop-blur border border-slate-700/50 rounded-2xl p-5">
+            <h2 className="text-lg font-semibold mb-4 flex items-center gap-2"><span className="w-2 h-2 rounded-full bg-red-500"></span>Recruitment Priorities</h2>
+            {{recruitment.length > 0 ? <RecruitmentTable /> : <div className="text-slate-500 text-center py-4">No recruitment priorities</div>}}
+          </div>
+        </div>
+
+        <div className="mt-6 bg-slate-800/40 backdrop-blur border border-slate-700/50 rounded-2xl p-5">
+          <h2 className="text-lg font-semibold mb-4 flex items-center gap-2"><span className="w-2 h-2 rounded-full bg-cyan-500"></span>Full Squad Fit Scores</h2>
+          {{squadFit.length > 0 ? <SquadTable /> : <div className="text-slate-500 text-center py-4">No squad data</div>}}
+        </div>
+
+        <div className="mt-8 pt-6 border-t border-slate-800 flex items-center justify-between text-sm text-slate-500">
+          <div>MTFI Prototype v0.2 • Data Source: Sportsmonks</div>
+          <div>Generated: {generated_at}</div>
+        </div>
+      </div>
+    </div>
+  );
+}};
+
+ReactDOM.render(<MTFIDashboard />, document.getElementById('root'));
+    </script>
+</body>
+</html>'''
     
     def _generate_dashboard_html(
         self,
@@ -1020,3 +1614,68 @@ class AegisVisualizer:
         self.plt.savefig(self.output_dir / "07_executive_summary.png", dpi=150, bbox_inches="tight")
         self.plt.close()
         print("  ✓ 07_executive_summary.png")
+
+
+# =============================================================================
+# STANDALONE CONVENIENCE FUNCTION
+# =============================================================================
+
+def generate_mtfi_dashboard(
+    data_dir: str = ".",
+    output_path: str = "MTFI_Dashboard.html",
+    manager_name: Optional[str] = None,
+    target_club: Optional[str] = None,
+    season: str = "2024/25"
+) -> str:
+    """
+    Generate MTFI Dashboard v2 HTML from CSV data files.
+    
+    This is a convenience function that wraps AegisVisualizer.generate_dashboard_v2().
+    
+    Args:
+        data_dir: Directory containing CSV files (default: current directory)
+        output_path: Path for output HTML file
+        manager_name: Override manager name (auto-detected if None)
+        target_club: Override target club name (auto-detected if None)
+        season: Season label for display
+    
+    Returns:
+        Path to generated HTML file
+    
+    Required CSV files in data_dir:
+        - manager_profiles.csv (from ManagerDNATrainer)
+        - cluster_centroids.csv (from ManagerDNATrainer)
+        - squad_fit_scores.csv (from SquadFitAnalyzer or AegisAnalyzer)
+        - ideal_xi.csv (from SquadFitAnalyzer)
+        - recruitment_priorities.csv (from AegisAnalyzer)
+    
+    Example:
+        from aegis.visualizations import generate_mtfi_dashboard
+        
+        # Generate from outputs directory
+        generate_mtfi_dashboard(
+            data_dir="/content/aegis_data/outputs",
+            output_path="/content/MTFI_Dashboard.html"
+        )
+    """
+    data_dir = Path(data_dir)
+    output_path = Path(output_path)
+    
+    # Create visualizer pointing to data directory
+    viz = AegisVisualizer(output_dir=data_dir)
+    
+    # Generate dashboard - output to specified path
+    original_output_dir = viz.output_dir
+    viz.output_dir = output_path.parent
+    
+    result = viz.generate_dashboard_v2(
+        filename=output_path.name,
+        manager_name=manager_name,
+        target_club=target_club,
+        season=season
+    )
+    
+    # Restore
+    viz.output_dir = original_output_dir
+    
+    return str(result)
