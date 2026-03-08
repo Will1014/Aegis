@@ -35,12 +35,12 @@ analyzer.save()
 results = analyzer.get_results()
 """
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 __author__ = "Aegis Football Advisory Group"
 
 from .config import Config
-from .client import SportsmonksClient
-from .etl import ETLPipeline
+from .client import SportsmonksClient, StatsBombClient
+from .etl import ETLPipeline, StatsBombETL
 from .analysis import (
     # New ML-based classes
     ManagerDNATrainer,
@@ -49,6 +49,8 @@ from .analysis import (
     ManagerProfile,
     # Constants
     MANAGER_DNA_FEATURES,
+    STATSBOMB_DNA_FEATURES,
+    DNA_PILLARS,
     PLAYER_FIT_FEATURES,
     FIT_THRESHOLDS,
     DEFAULT_MANAGERS,
@@ -59,12 +61,14 @@ from .analysis import (
 from .visualizations import AegisVisualizer
 
 __all__ = [
-    # Config & Client
+    # Config & Clients
     "Config",
     "SportsmonksClient",
+    "StatsBombClient",
     
     # ETL
     "ETLPipeline",
+    "StatsBombETL",
     
     # Analysis (New)
     "ManagerDNATrainer",
@@ -87,6 +91,7 @@ __all__ = [
     
     # Convenience functions
     "run_full_analysis",
+    "run_full_analysis_statsbomb",
     "train_manager_dna",
     "analyse_squad_fit",
 ]
@@ -487,4 +492,248 @@ def run_full_analysis(
     print(f"  Potentially Marginalised: {results['classification_counts']['Potentially Marginalised']}")
     
     return results
+    return results
+
+
+def run_full_analysis_statsbomb(
+    competition_id: int,
+    season_id: int,
+    team_name: str,
+    coach_name: str = None,
+    username: str = None,
+    password: str = None,
+    base_dir: str = "/content/aegis_data",
+    train_model: bool = True,
+    training_competition_ids: list = None,
+    visualize: bool = True,
+    max_matches: int = 50
+) -> dict:
+    """
+    Run full MTFI analysis using StatsBomb data.
+    
+    Run full MTFI analysis using StatsBomb data end-to-end.
+    No Sportsmonks dependency.
+    
+    Args:
+        competition_id: StatsBomb competition ID (e.g., 2 for Premier League)
+        season_id: StatsBomb season ID (e.g., 317 for 2024/25)
+        team_name: Target club name (e.g., "Chelsea")
+        coach_name: Manager name (recommended, e.g. "Enzo Maresca")
+        username: StatsBomb username (or set SB_USERNAME env var)
+        password: StatsBomb password (or set SB_PASSWORD env var)
+        base_dir: Base directory for data and outputs
+        train_model: Whether to train Manager DNA model (set False after first run)
+        training_competition_ids: List of competition IDs for training.
+                    More = richer clustering. e.g. [2, 3, 6] for PL+Champ+Eredivisie
+        visualize: Generate interactive dashboard
+        max_matches: Maximum matches to fetch team stats for
+        
+    Returns:
+        Dictionary with analysis results
+        
+    Example:
+        results = run_full_analysis_statsbomb(
+            competition_id=2,      # Premier League
+            season_id=282,         # 2024/25
+            team_name="Chelsea",
+            username="you@email.com",
+            password="your_password",
+            train_model=True
+        )
+    """
+    import os
+    
+    if username:
+        os.environ["SB_USERNAME"] = username
+    if password:
+        os.environ["SB_PASSWORD"] = password
+    
+    Config.set_base_dir(base_dir)
+    Config.setup()
+    
+    # ── Step 1: Train Manager DNA (StatsBomb) ──
+    if train_model:
+        print("\n" + "=" * 60)
+        print("STEP 1: TRAINING MANAGER DNA MODEL (StatsBomb)")
+        print("=" * 60)
+        
+        training_dir = Config.PROCESSED_DIR / "training"
+        sb_trainer_client = StatsBombClient()
+        
+        trainer = ManagerDNATrainer(training_dir=training_dir)
+        trainer.fetch_manager_data_statsbomb(
+            sb_client=sb_trainer_client,
+            competition_id=competition_id,
+            season_id=season_id,
+            competition_ids=training_competition_ids
+        )
+        # Note: extract_features() is NOT needed — fetch_manager_data_statsbomb
+        # populates manager_features directly from team match stats
+        trainer.fit()
+        trainer.save()
+    
+    # ── Step 2: Fetch StatsBomb Data ──
+    print("\n" + "=" * 60)
+    print("STEP 2: FETCHING STATSBOMB DATA")
+    print("=" * 60)
+    
+    sb_client = StatsBombClient()
+    scenario = sb_client.fetch_scenario(
+        competition_id=competition_id,
+        season_id=season_id,
+        team_name=team_name,
+        max_matches=max_matches
+    )
+    
+    # ── Step 3: Run StatsBomb ETL ──
+    print("\n" + "=" * 60)
+    print("STEP 3: STATSBOMB ETL")
+    print("=" * 60)
+    
+    etl = StatsBombETL()
+    manager_dna, squad_profiles = etl.run()
+    
+    # ── Step 4: Squad Fit Analysis ──
+    print("\n" + "=" * 60)
+    print("STEP 4: SQUAD FIT ANALYSIS")
+    print("=" * 60)
+    
+    analyzer = SquadFitAnalyzer()
+    analyzer.load_model()
+    
+    # Use explicit coach_name if provided, otherwise from match data
+    manager_name = coach_name or scenario["manager_info"].get("name", "Unknown")
+    
+    # Inject the coach name into the DNA so downstream consumers have it
+    if coach_name:
+        manager_dna["manager"] = coach_name
+    analyzer.set_target_manager_from_dna(manager_dna)
+    analyzer.calculate_fit_scores_from_profiles(squad_profiles, club_name=team_name)
+    analyzer.save()
+    
+    # ── Step 4b: Generate recruitment priorities + legacy JSON for visualiser ──
+    import json
+    import csv as _csv
+    from collections import defaultdict as _dd
+    
+    position_groups = _dd(list)
+    for p in analyzer.squad_fit:
+        position_groups[p.position_group].append(p)
+    
+    recruitment = []
+    for pos_group, players in position_groups.items():
+        if not players:
+            continue
+        avg_fit = sum(p.fit_score for p in players) / len(players)
+        if avg_fit < 60:
+            gap = 75 - avg_fit
+            cost_map = {"GK": (15, 35), "DEF": (25, 55), "MID": (30, 65), "ATT": (35, 75)}
+            cost_low, cost_high = cost_map.get(pos_group, (20, 50))
+            urgency = "Critical" if avg_fit < 45 else "High" if avg_fit < 55 else "Medium"
+            timeline = "January" if urgency == "Critical" else "Summer"
+            recruitment.append({
+                "position": pos_group, "gap": round(gap, 1),
+                "urgency": urgency, "timeline": timeline,
+                "cost_low": cost_low, "cost_high": cost_high
+            })
+    recruitment.sort(key=lambda x: x["gap"], reverse=True)
+    
+    if recruitment:
+        with open(Config.OUTPUT_DIR / "recruitment_priorities.csv", "w", newline="") as f:
+            writer = _csv.DictWriter(f, fieldnames=["position", "gap", "urgency", "timeline", "cost_low", "cost_high"])
+            writer.writeheader()
+            writer.writerows(recruitment)
+    
+    # Build DNA dimensions for radar chart (Gary's 8 pillars)
+    tp = manager_dna.get("tactical_profile", {})
+    rp = manager_dna.get("results_profile", {})
+    sb = manager_dna.get("statsbomb_enhanced", {})
+    
+    ppda = sb.get("ppda", tp.get("pressing", {}).get("ppda", 10))
+    possession = tp.get("possession", {}).get("avg", 50)
+    pass_acc = tp.get("build_up", {}).get("pass_accuracy", 80)
+    
+    dna_dimensions = {
+        # Pillar 1: Shape & Occupation (possession + defensive structure)
+        "Shape & Occupation": min(100, round(possession * 1.2 + rp.get("clean_sheet_pct", 30) * 0.3, 0)),
+        # Pillar 2: Build-up vs Direct (pass accuracy + patience)
+        "Build-up": min(100, round(pass_acc, 0)),
+        # Pillar 3: Chance Creation (xG quality)
+        "Chance Creation": min(100, round(sb.get("np_xg_per_game", rp.get("goals_per_game", 1.5)) * 40, 0)),
+        # Pillar 4: Press & Counterpress (PPDA inverted)
+        "Press & Counterpress": min(100, round(max(0, 30 - ppda) * 4, 0)),
+        # Pillar 5: Block & Line Height (defensive distance + solidity)
+        "Block & Line Height": min(100, round(
+            tp.get("pressing", {}).get("defensive_distance", 40) * 1.5 + 
+            max(0, 2.0 - rp.get("conceded_per_game", 1.2)) * 20, 0)),
+        # Pillar 6: Transitions (counter-attacking threat)
+        "Transitions": min(100, round(
+            sb.get("counter_attacking_shots_pg", 
+                   tp.get("attacking", {}).get("counter_attacking_shots_pg", 1)) * 25 +
+            sb.get("high_press_shots_pg", 0) * 20, 0)),
+        # Pillar 7: Width & Overloads
+        "Width & Overloads": min(100, round(sb.get("width_usage", 5) * 10, 0)),
+        # Pillar 8: Set Pieces
+        "Set Pieces": min(100, round(sb.get("set_piece_emphasis", 20) * 2, 0)),
+    }
+    
+    legacy_results = {
+        "manager": manager_name,
+        "matches_analysed": manager_dna.get("matches_analysed", 0),
+        "primary_formation": manager_dna.get("formation_profile", {}).get("primary", "4-3-3"),
+        "dna_dimensions": dna_dimensions,
+        "squad_summary": {
+            "total": len(analyzer.squad_fit),
+            "key_enablers": sum(1 for p in analyzer.squad_fit if p.classification == "Key Enabler"),
+            "good_fit": sum(1 for p in analyzer.squad_fit if p.classification == "Good Fit"),
+            "system_dependent": sum(1 for p in analyzer.squad_fit if p.classification == "System Dependent"),
+            "marginalised": sum(1 for p in analyzer.squad_fit if p.classification == "Potentially Marginalised"),
+            "average_fit": round(sum(p.fit_score for p in analyzer.squad_fit) / max(len(analyzer.squad_fit), 1), 1)
+        },
+        "ideal_xi": analyzer.ideal_xi,
+        "recruitment": recruitment
+    }
+    
+    with open(Config.OUTPUT_DIR / "aegis_analysis.json", "w") as f:
+        json.dump(legacy_results, f, indent=2)
+    
+    # ── Step 5: Visualise ──
+    if visualize:
+        print("\n" + "=" * 60)
+        print("STEP 5: GENERATING DASHBOARD")
+        print("=" * 60)
+        try:
+            viz = AegisVisualizer()
+            viz.generate_dashboard()
+        except Exception as e:
+            print(f"⚠ Dashboard generation: {e}")
+    
+    # Build results dict
+    avg_fit = sum(p.fit_score for p in analyzer.squad_fit) / len(analyzer.squad_fit) if analyzer.squad_fit else 0
+    
+    classification_counts = {}
+    for cls_name in ["Key Enabler", "Good Fit", "System Dependent", "Potentially Marginalised"]:
+        classification_counts[cls_name] = sum(
+            1 for p in analyzer.squad_fit if p.classification == cls_name
+        )
+    
+    results = {
+        "manager": manager_name,
+        "club": team_name,
+        "data_source": "statsbomb",
+        "archetype": analyzer.target_cluster_name or "Unknown",
+        "average_fit": round(avg_fit, 1),
+        "classification_counts": classification_counts,
+        "squad_profiles": squad_profiles,
+        "manager_dna": manager_dna,
+    }
+    
+    print("\n" + "=" * 60)
+    print("ANALYSIS COMPLETE (StatsBomb)")
+    print("=" * 60)
+    print(f"Manager: {results['manager']}")
+    print(f"Club: {results['club']}")
+    print(f"Tactical Archetype: {results['archetype']}")
+    print(f"Average Squad Fit: {results['average_fit']:.1f}")
+    
     return results

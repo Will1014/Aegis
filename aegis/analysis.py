@@ -67,6 +67,78 @@ MANAGER_DNA_FEATURES = [
     "win_rate"
 ]
 
+# ── Gary's 8-Pillar StatsBomb DNA Features (for clustering) ──
+# Each feature maps to one of the 8 tactical DNA pillars.
+# Computed from StatsBomb team_match_stats aggregates.
+STATSBOMB_DNA_FEATURES = [
+    "pressing_intensity",       # Pillar 4: Press (PPDA inverted, poss-adjusted)
+    "counterpress_rate",        # Pillar 4: Counterpress tendency
+    "build_up_patience",        # Pillar 2: Passes per possession / sequence length
+    "directness",               # Pillar 2: Forward progression speed
+    "chance_quality",           # Pillar 3: xG per shot
+    "defensive_line_height",    # Pillar 5: Average defensive action distance
+    "width_usage",              # Pillar 7: Cross + wide action share
+    "set_piece_emphasis",       # Pillar 8: Set-piece xG share
+    "transition_threat",        # Pillar 6: Counter-attacking shots
+    "defensive_solidity",       # Pillar 5: xGA quality (inverted)
+]
+
+# The 8 Tactical DNA Pillars (Gary's framework)
+# Each pillar has: display name, sub-metrics, and which DNA feature(s) drive it
+DNA_PILLARS = {
+    "shape_occupation": {
+        "name": "Shape & Occupation",
+        "number": 1,
+        "metrics": ["defensive_line_height", "possession"],
+        "description": "Base shape (IP/OOP), rest defence, role clarity",
+    },
+    "build_up": {
+        "name": "Build-up vs Direct",
+        "number": 2,
+        "metrics": ["build_up_patience", "directness", "pass_accuracy"],
+        "description": "Progression routes, pass/carry mix, tempo & patience",
+    },
+    "chance_creation": {
+        "name": "Chance Creation",
+        "number": 3,
+        "metrics": ["chance_quality", "np_xg_pg", "deep_completions_pg"],
+        "description": "Shot profile, assist types, zone entry patterns",
+    },
+    "press_counterpress": {
+        "name": "Press & Counterpress",
+        "number": 4,
+        "metrics": ["pressing_intensity", "counterpress_rate", "high_regain_rate"],
+        "description": "Pressure volume, counterpress, high regains",
+    },
+    "block_line_height": {
+        "name": "Block & Line Height",
+        "number": 5,
+        "metrics": ["defensive_line_height", "defensive_solidity", "xga_pg"],
+        "description": "Def action height, box protection, balls in behind",
+    },
+    "transitions": {
+        "name": "Transitions",
+        "number": 6,
+        "metrics": ["transition_threat", "high_press_shots_pg", "turnover_shots_conceded_pg"],
+        "description": "Time-to-shot, turnover risk, counter-attack",
+    },
+    "width_overloads": {
+        "name": "Width & Overloads",
+        "number": 7,
+        "metrics": ["width_usage", "cross_rate", "box_cross_ratio"],
+        "description": "Wing usage, switches, cross/cutback mix",
+    },
+    "set_pieces": {
+        "name": "Set Pieces",
+        "number": 8,
+        "metrics": ["set_piece_emphasis", "sp_xg_pg", "sp_xg_against_pg"],
+        "description": "Set-piece xG share, routines, second-phase control",
+    },
+}
+
+# Archetype weights for player fit scoring (unchanged — works with both feature sets)
+# The archetype names are assigned by _name_clusters() based on feature z-scores
+
 # Features for Player Fit scoring (per-90 metrics)
 PLAYER_FIT_FEATURES = [
     "goals_per90",
@@ -244,6 +316,7 @@ class ManagerDNATrainer:
         # Data containers
         self.manager_tenures = []
         self.manager_features = []
+        self.feature_names = None  # Set by fetch_manager_data_statsbomb; defaults to MANAGER_DNA_FEATURES
         
         # Model components
         self.kmeans = None
@@ -642,6 +715,291 @@ class ManagerDNATrainer:
 
         return self
 
+    def fetch_manager_data_statsbomb(
+        self,
+        sb_client,
+        competition_id: int,
+        season_id: int,
+        competition_ids: List[int] = None,
+        verbose: bool = True
+    ) -> "ManagerDNATrainer":
+        """
+        Fetch tactical data for ALL managers in a StatsBomb competition/season.
+        
+        This replaces the Sportsmonks fetch_manager_data() + extract_features()
+        pipeline — it populates manager_features directly from StatsBomb team
+        match stats, so you can call fit() immediately after.
+        
+        Args:
+            sb_client: StatsBombClient instance
+            competition_id: Primary competition (e.g. 2 for Premier League)
+            season_id: Season (e.g. 317 for 2024/25)
+            competition_ids: Additional competitions to include (optional).
+                            Adds more managers for richer clustering.
+                            e.g. [2, 3, 6] for PL + Championship + Eredivisie
+            verbose: Print progress
+            
+        Returns:
+            self for chaining — manager_features is populated ready for fit()
+        """
+        from collections import defaultdict
+        
+        all_comp_ids = competition_ids or [competition_id]
+        if competition_id not in all_comp_ids:
+            all_comp_ids.insert(0, competition_id)
+        
+        if verbose:
+            print("=" * 60)
+            print("FETCHING MANAGER DATA (StatsBomb)")
+            print("=" * 60)
+            print(f"Competitions: {all_comp_ids}")
+            print(f"Season: {season_id}")
+        
+        self.manager_tenures = []
+        self.manager_features = []
+        
+        for comp_id in all_comp_ids:
+            if verbose:
+                print(f"\n── Competition {comp_id} ──")
+            
+            # 1. Get all matches to extract teams and managers
+            matches = sb_client.get_matches(comp_id, season_id)
+            if not matches:
+                if verbose:
+                    print(f"  ⚠ No matches for comp={comp_id}, season={season_id}")
+                continue
+            
+            if verbose:
+                print(f"  {len(matches)} matches found")
+            
+            # Extract team→manager mapping and results
+            team_managers = {}   # team_id → {name, manager_name, ...}
+            team_results = defaultdict(lambda: {"w": 0, "d": 0, "l": 0, "gf": 0, "ga": 0, "cs": 0})
+            
+            for match in matches:
+                home = match.get("home_team", {})
+                away = match.get("away_team", {})
+                
+                h_id = home.get("home_team_id") or home.get("id") or home.get("team_id")
+                a_id = away.get("away_team_id") or away.get("id") or away.get("team_id")
+                h_name = home.get("home_team_name") or home.get("name") or ""
+                a_name = away.get("away_team_name") or away.get("name") or ""
+                
+                hs = match.get("home_score", 0) or 0
+                aws = match.get("away_score", 0) or 0
+                
+                # Extract managers (nested inside team object at .managers)
+                h_mgr = home.get("managers") or match.get("home_team_manager")
+                a_mgr = away.get("managers") or match.get("away_team_manager")
+                
+                def _mgr_name(mgr):
+                    if isinstance(mgr, list):
+                        mgr = mgr[0] if mgr else None
+                    if isinstance(mgr, dict):
+                        return mgr.get("name") or mgr.get("nickname") or "Unknown"
+                    return "Unknown"
+                
+                if h_id and h_id not in team_managers:
+                    team_managers[h_id] = {
+                        "team_name": h_name,
+                        "manager_name": _mgr_name(h_mgr),
+                    }
+                if a_id and a_id not in team_managers:
+                    team_managers[a_id] = {
+                        "team_name": a_name,
+                        "manager_name": _mgr_name(a_mgr),
+                    }
+                
+                # Track results
+                if h_id:
+                    r = team_results[h_id]
+                    r["gf"] += hs; r["ga"] += aws
+                    if aws == 0: r["cs"] += 1
+                    if hs > aws: r["w"] += 1
+                    elif hs < aws: r["l"] += 1
+                    else: r["d"] += 1
+                
+                if a_id:
+                    r = team_results[a_id]
+                    r["gf"] += aws; r["ga"] += hs
+                    if hs == 0: r["cs"] += 1
+                    if aws > hs: r["w"] += 1
+                    elif aws < hs: r["l"] += 1
+                    else: r["d"] += 1
+            
+            if verbose:
+                print(f"  {len(team_managers)} teams with managers")
+            
+            # 2. Fetch team match stats for all matches
+            # Aggregate per team
+            team_stats_agg = defaultdict(list)  # team_id → [stat_dicts]
+            
+            available = [m for m in matches if m.get("match_status") == "available"]
+            if not available:
+                available = matches
+            
+            if verbose:
+                print(f"  Fetching team match stats ({len(available)} matches)...")
+            
+            for i, match in enumerate(available):
+                mid = match.get("match_id")
+                try:
+                    stats_list = sb_client.get_team_match_stats(mid)
+                    for stat in (stats_list or []):
+                        tid = stat.get("team_id")
+                        if tid:
+                            team_stats_agg[tid].append(stat)
+                except Exception:
+                    pass
+                
+                if verbose and (i + 1) % 50 == 0:
+                    print(f"    ... {i + 1}/{len(available)}")
+            
+            if verbose:
+                print(f"  Stats collected for {len(team_stats_agg)} teams")
+            
+            # 3. Build features for each team
+            for team_id, info in team_managers.items():
+                stats_list = team_stats_agg.get(team_id, [])
+                results = team_results.get(team_id, {})
+                
+                if not stats_list:
+                    continue
+                
+                n_matches = len(stats_list)
+                total_matches = (results.get("w", 0) + results.get("d", 0) + results.get("l", 0)) or 1
+                
+                def avg_stat(key, default=0):
+                    vals = [s.get(key) for s in stats_list if s.get(key) is not None]
+                    return round(sum(vals) / len(vals), 2) if vals else default
+                
+                possession = avg_stat("team_match_possession", 50.0)
+                passing_ratio = avg_stat("team_match_passing_ratio", 80.0)
+                np_shots = avg_stat("team_match_np_shots", 12.0)
+                ppda = avg_stat("team_match_ppda", 10.0)
+                np_xg = avg_stat("team_match_np_xg", 1.5)
+                np_xg_conceded = avg_stat("team_match_np_xg_conceded", 1.2)
+                pressures = avg_stat("team_match_pressures", 150)
+                counterpressures = avg_stat("team_match_counterpressures", 30)
+                pressure_regains = avg_stat("team_match_pressure_regains", 20)
+                defensive_distance = avg_stat("team_match_defensive_distance", 40)
+                directness_raw = avg_stat("team_match_directness", 0.3)
+                deep_completions = avg_stat("team_match_deep_completions", 5)
+                deep_progressions = avg_stat("team_match_deep_progressions", 20)
+                crosses_into_box = avg_stat("team_match_crosses_into_box", 5)
+                box_cross_ratio = avg_stat("team_match_box_cross_ratio", 30)
+                sp_xg = avg_stat("team_match_sp_xg", 0.3)
+                op_xg = avg_stat("team_match_op_xg", 1.0)
+                counter_shots = avg_stat("team_match_counter_attacking_shots", 1.0)
+                high_press_shots = avg_stat("team_match_high_press_shots", 0.5)
+                possessions_pg = avg_stat("team_match_possessions", 50)
+                obv = avg_stat("team_match_obv", 0.0)
+                
+                goals_scored_pg = round(results["gf"] / total_matches, 2) if results["gf"] else 1.5
+                goals_conceded_pg = round(results["ga"] / total_matches, 2) if results["ga"] else 1.2
+                clean_sheet_pct = round(results["cs"] / total_matches * 100, 1)
+                win_rate = round(results["w"] / total_matches * 100, 1)
+                
+                # ── 8-Pillar Feature Computation ──
+                
+                # P4: Pressing intensity (PPDA inverted — lower PPDA = more pressing)
+                pressing_intensity = round(max(0, 30 - ppda), 1)
+                
+                # P4: Counterpress rate
+                counterpress_rate = round(
+                    counterpressures / max(pressures, 1) * 100, 1
+                )
+                
+                # P2: Build-up patience (passes per possession proxy)
+                build_up_patience = round(100 - (directness_raw * 100), 1)
+                
+                # P2: Directness (0–100 scale)
+                directness_score = round(directness_raw * 100, 1)
+                
+                # P3: Chance creation quality (xG per shot)
+                chance_quality = round(np_xg / max(np_shots, 1), 3)
+                
+                # P5: Defensive line height
+                defensive_line_height = round(defensive_distance, 1)
+                
+                # P7: Width usage (crosses into box per game)
+                width_usage = round(crosses_into_box, 1)
+                
+                # P8: Set-piece emphasis (SP xG as % of total xG)
+                total_xg = sp_xg + op_xg
+                set_piece_emphasis = round(
+                    sp_xg / max(total_xg, 0.01) * 100, 1
+                )
+                
+                # P6: Transition threat (counter-attacking shots per game)
+                transition_threat = round(counter_shots, 2)
+                
+                # P5: Defensive solidity (inverted xGA, scaled)
+                defensive_solidity = round(max(0, 3.0 - np_xg_conceded) * 33.3, 1)
+                
+                # Build feature dict matching STATSBOMB_DNA_FEATURES
+                features = {
+                    # Clustering features (STATSBOMB_DNA_FEATURES)
+                    "pressing_intensity": pressing_intensity,
+                    "counterpress_rate": counterpress_rate,
+                    "build_up_patience": build_up_patience,
+                    "directness": directness_score,
+                    "chance_quality": chance_quality,
+                    "defensive_line_height": defensive_line_height,
+                    "width_usage": width_usage,
+                    "set_piece_emphasis": set_piece_emphasis,
+                    "transition_threat": transition_threat,
+                    "defensive_solidity": defensive_solidity,
+                    # Metadata
+                    "coach_id": team_id,
+                    "coach_name": info["manager_name"],
+                    "team_id": team_id,
+                    "team_name": info["team_name"],
+                    "league": f"Competition {comp_id}",
+                    # Extended metrics (not used for clustering, used for DNA profile)
+                    "_possession": possession,
+                    "_pass_accuracy": passing_ratio,
+                    "_np_xg_pg": np_xg,
+                    "_np_xg_conceded_pg": np_xg_conceded,
+                    "_ppda": ppda,
+                    "_np_shots_pg": np_shots,
+                    "_pressures_pg": pressures,
+                    "_deep_completions_pg": deep_completions,
+                    "_deep_progressions_pg": deep_progressions,
+                    "_sp_xg_pg": sp_xg,
+                    "_counter_shots_pg": counter_shots,
+                    "_high_press_shots_pg": high_press_shots,
+                    "_obv_pg": obv,
+                    "_goals_scored_pg": goals_scored_pg,
+                    "_goals_conceded_pg": goals_conceded_pg,
+                    "_clean_sheet_pct": clean_sheet_pct,
+                    "_win_rate": win_rate,
+                }
+                
+                self.manager_tenures.append({
+                    "coach_id": team_id,
+                    "coach_name": info["manager_name"],
+                    "team_id": team_id,
+                    "team_name": info["team_name"],
+                })
+                self.manager_features.append(features)
+                
+                if verbose:
+                    print(f"    ✓ {info['manager_name']:25s} ({info['team_name']:25s}) "
+                          f"press={pressing_intensity:.0f} patience={build_up_patience:.0f} "
+                          f"xG/sh={chance_quality:.3f} def_h={defensive_line_height:.0f} "
+                          f"width={width_usage:.1f} SP%={set_piece_emphasis:.0f}")
+        
+        # Set feature names for fit()
+        self.feature_names = STATSBOMB_DNA_FEATURES
+        
+        if verbose:
+            print("\n" + "-" * 60)
+            print(f"Total managers with features: {len(self.manager_features)}")
+            print(f"Feature set: 8-Pillar StatsBomb DNA ({len(STATSBOMB_DNA_FEATURES)} features)")
+        
+        return self
+
     def _fetch_pass_accuracy_from_fixtures(
         self,
         team_id: int,
@@ -794,11 +1152,14 @@ class ManagerDNATrainer:
             print("FITTING CLUSTERING MODEL")
             print("=" * 60)
         
+        # Resolve feature columns (StatsBomb 8-pillar or Sportsmonks legacy)
+        feature_cols = self.feature_names or MANAGER_DNA_FEATURES
+        
         # Create DataFrame
         self.df_managers = pd.DataFrame(self.manager_features)
         
         # Extract feature matrix
-        X = self.df_managers[MANAGER_DNA_FEATURES].values
+        X = self.df_managers[feature_cols].values
         
         # Scale features
         self.scaler = StandardScaler()
@@ -842,7 +1203,7 @@ class ManagerDNATrainer:
         
         # Create centroids DataFrame
         centroids = self.scaler.inverse_transform(self.kmeans.cluster_centers_)
-        self.df_centroids = pd.DataFrame(centroids, columns=MANAGER_DNA_FEATURES)
+        self.df_centroids = pd.DataFrame(centroids, columns=feature_cols)
         self.df_centroids["cluster"] = range(n_clusters)
         
         # Auto-name clusters
@@ -867,14 +1228,66 @@ class ManagerDNATrainer:
         _calculate_weighted_fit() can look up the correct feature weights.
         Valid names: Possession-Based, High-Press, Counter-Attack,
                      Defensive, Attacking, Balanced.
+        
+        Supports both Sportsmonks features and StatsBomb 8-pillar features.
         """
         import pandas as pd
 
-        overall_mean = self.df_managers[MANAGER_DNA_FEATURES].mean()
-        overall_std  = self.df_managers[MANAGER_DNA_FEATURES].std()
+        feature_cols = self.feature_names or MANAGER_DNA_FEATURES
+        overall_mean = self.df_managers[feature_cols].mean()
+        overall_std  = self.df_managers[feature_cols].std()
 
-        negative_traits = ["goals_conceded"]  # lower = better, so z is inverted
+        # Features where lower = better (z-scores get inverted)
+        negative_traits = ["goals_conceded"]
         used_names: set = set()
+
+        STRONG = 0.5
+        WEAK   = 0.2
+        
+        # Feature → archetype mapping (covers both Sportsmonks and StatsBomb)
+        FEAT_TO_ARCHETYPE_POS = {
+            # Sportsmonks features
+            "possession": "Possession-Based",
+            "pass_accuracy": "Possession-Based",
+            "shots": "Attacking",
+            "goals_scored": "Attacking",
+            "tackles": "High-Press",
+            "interceptions": "High-Press",
+            "goals_conceded": "Defensive",  # inverted: low conceded = Defensive
+            "clean_sheet_pct": "Defensive",
+            "win_rate": "Balanced",
+            # StatsBomb 8-pillar features
+            "pressing_intensity": "High-Press",
+            "counterpress_rate": "High-Press",
+            "build_up_patience": "Possession-Based",
+            "directness": "Counter-Attack",
+            "chance_quality": "Attacking",
+            "defensive_line_height": "High-Press",
+            "width_usage": "Attacking",
+            "set_piece_emphasis": "Balanced",
+            "transition_threat": "Counter-Attack",
+            "defensive_solidity": "Defensive",
+        }
+        FEAT_TO_ARCHETYPE_NEG = {
+            "possession": "Counter-Attack",
+            "pass_accuracy": "Counter-Attack",
+            "shots": "Defensive",
+            "goals_scored": "Defensive",
+            "tackles": "Defensive",
+            "interceptions": "Balanced",
+            "goals_conceded": "Attacking",
+            "clean_sheet_pct": "Attacking",
+            "pressing_intensity": "Defensive",
+            "counterpress_rate": "Balanced",
+            "build_up_patience": "Counter-Attack",
+            "directness": "Possession-Based",
+            "chance_quality": "Defensive",
+            "defensive_line_height": "Defensive",
+            "width_usage": "Balanced",
+            "set_piece_emphasis": "Balanced",
+            "transition_threat": "Balanced",
+            "defensive_solidity": "Attacking",
+        }
 
         STRONG = 0.5
         WEAK   = 0.2
@@ -883,7 +1296,7 @@ class ManagerDNATrainer:
             centroid = self.df_centroids.loc[c]
 
             z_scores = {}
-            for feat in MANAGER_DNA_FEATURES:
+            for feat in feature_cols:
                 if overall_std[feat] > 0:
                     z = (centroid[feat] - overall_mean[feat]) / overall_std[feat]
                     if feat in negative_traits:
@@ -894,70 +1307,33 @@ class ManagerDNATrainer:
 
             sorted_feats = sorted(z_scores.items(), key=lambda x: abs(x[1]), reverse=True)
             top_feat, top_z = sorted_feats[0]
-            sec_feat, sec_z = sorted_feats[1]
+            sec_feat, sec_z = sorted_feats[1] if len(sorted_feats) > 1 else ("", 0)
 
+            # Lookup-based naming using the archetype maps
             if top_z >= STRONG:
-                if top_feat == "possession":
-                    name = "Possession-Based"
-                elif top_feat in ("tackles", "interceptions"):
-                    name = "High-Press"
-                elif top_feat in ("shots", "goals_scored"):
-                    name = "Attacking"
-                elif top_feat in ("goals_conceded", "clean_sheet_pct"):
-                    name = "Defensive"
-                elif top_feat == "pass_accuracy":
-                    name = "Possession-Based" if z_scores.get("possession", 0) >= 0 else "Balanced"
-                elif top_feat == "win_rate":
-                    if sec_z >= WEAK and sec_feat in ("shots", "goals_scored"):
-                        name = "Attacking"
-                    elif sec_z >= WEAK and sec_feat in ("tackles", "interceptions"):
-                        name = "High-Press"
-                    else:
-                        name = "Balanced"
-                else:
-                    name = "Balanced"
-
+                name = FEAT_TO_ARCHETYPE_POS.get(top_feat, "Balanced")
             elif top_z <= -STRONG:
-                if top_feat == "possession":
-                    name = "Counter-Attack"
-                elif top_feat in ("tackles", "interceptions"):
-                    name = "Defensive"
-                elif top_feat in ("goals_conceded", "clean_sheet_pct"):
-                    name = "Attacking"
-                elif top_feat in ("shots", "goals_scored"):
-                    name = "Defensive" if sec_z <= -WEAK else "Counter-Attack"
+                name = FEAT_TO_ARCHETYPE_NEG.get(top_feat, "Balanced")
+            elif abs(top_z) >= WEAK:
+                if top_z > 0:
+                    name = FEAT_TO_ARCHETYPE_POS.get(top_feat, "Balanced")
                 else:
-                    name = "Balanced"
-
+                    name = FEAT_TO_ARCHETYPE_NEG.get(top_feat, "Balanced")
             else:
-                if abs(top_z) >= WEAK:
-                    if top_z > 0:
-                        name = (
-                            "Possession-Based" if top_feat in ("possession", "pass_accuracy") else
-                            "High-Press"       if top_feat in ("tackles", "interceptions") else
-                            "Attacking"        if top_feat in ("shots", "goals_scored") else
-                            "Defensive"        if top_feat in ("goals_conceded", "clean_sheet_pct") else
-                            "Balanced"
-                        )
-                    else:
-                        name = (
-                            "Counter-Attack" if top_feat == "possession" else
-                            "Defensive"      if top_feat in ("tackles", "interceptions") else
-                            "Balanced"
-                        )
-                else:
-                    name = "Balanced"
+                name = "Balanced"
 
             # Deduplicate: pick next-best canonical name by archetype signal score
             if name in used_names:
-                archetype_signals = {
-                    "Possession-Based": z_scores.get("possession", 0) + z_scores.get("pass_accuracy", 0),
-                    "High-Press":       z_scores.get("tackles", 0)    + z_scores.get("interceptions", 0),
-                    "Counter-Attack":  -z_scores.get("possession", 0) + z_scores.get("goals_scored", 0),
-                    "Attacking":        z_scores.get("shots", 0)       + z_scores.get("goals_scored", 0),
-                    "Defensive":        z_scores.get("goals_conceded", 0) + z_scores.get("clean_sheet_pct", 0),
-                    "Balanced":         0,
-                }
+                # Build archetype signals from available features (works for both feature sets)
+                archetype_signals = {"Balanced": 0}
+                for feat, z in z_scores.items():
+                    pos_arch = FEAT_TO_ARCHETYPE_POS.get(feat)
+                    if pos_arch and pos_arch != "Balanced":
+                        archetype_signals[pos_arch] = archetype_signals.get(pos_arch, 0) + max(z, 0)
+                    neg_arch = FEAT_TO_ARCHETYPE_NEG.get(feat)
+                    if neg_arch and neg_arch != "Balanced":
+                        archetype_signals[neg_arch] = archetype_signals.get(neg_arch, 0) + max(-z, 0)
+                
                 ranked = sorted(
                     [a for a in archetype_signals if a not in used_names],
                     key=lambda a: archetype_signals[a],
@@ -983,7 +1359,7 @@ class ManagerDNATrainer:
             "kmeans": self.kmeans,
             "scaler": self.scaler,
             "pca": self.pca,
-            "feature_cols": MANAGER_DNA_FEATURES,
+            "feature_cols": self.feature_names or MANAGER_DNA_FEATURES,
             "cluster_names": self.cluster_names,
             "n_clusters": self.n_clusters,
         }
@@ -1000,7 +1376,7 @@ class ManagerDNATrainer:
             "n_managers": len(self.df_managers),
             "n_clusters": self.n_clusters,
             "cluster_names": self.cluster_names,
-            "feature_cols": MANAGER_DNA_FEATURES,
+            "feature_cols": self.feature_names or MANAGER_DNA_FEATURES,
             "managers_by_cluster": {
                 self.cluster_names[c]: self.df_managers[self.df_managers["cluster"] == c]["coach_name"].tolist()
                 for c in range(self.n_clusters)
@@ -1158,6 +1534,188 @@ class SquadFitAnalyzer:
             others = [n for n in same_cluster["coach_name"].tolist() if n != self.target_manager]
             if others:
                 print(f"  Similar Managers: {', '.join(others)}")
+        
+        return self
+    
+    def set_target_manager_from_dna(
+        self,
+        manager_dna: dict,
+        verbose: bool = True
+    ) -> "SquadFitAnalyzer":
+        """
+        Set the target manager using a pre-built manager DNA dict.
+        
+        Predicts which cluster the DNA belongs to using the trained model.
+        Works with DNA from either ETLPipeline or StatsBombETL.
+        """
+        import numpy as np
+        
+        self.target_manager = manager_dna.get("manager", "Unknown")
+        self.target_club = manager_dna.get("team", "Unknown")
+        
+        tp = manager_dna.get("tactical_profile", {})
+        rp = manager_dna.get("results_profile", {})
+        sb = manager_dna.get("statsbomb_enhanced", {})
+        
+        # Build features for BOTH feature sets — the model picks which to use
+        features = {
+            # Sportsmonks legacy features
+            "possession": tp.get("possession", {}).get("avg", 50.0),
+            "pass_accuracy": tp.get("build_up", {}).get("pass_accuracy", 80.0),
+            "shots": tp.get("attacking", {}).get("shots_pg", 12.0),
+            "goals_scored": rp.get("goals_per_game", 1.5),
+            "goals_conceded": rp.get("conceded_per_game", 1.2),
+            "tackles": tp.get("pressing", {}).get("intensity", {}).get("avg", 20.0) * 0.6,
+            "interceptions": tp.get("pressing", {}).get("intensity", {}).get("avg", 20.0) * 0.4,
+            "clean_sheet_pct": rp.get("clean_sheet_pct", 30.0),
+            "win_rate": rp.get("win_rate", 33.0),
+            # StatsBomb 8-pillar features
+            "pressing_intensity": max(0, 30 - sb.get("ppda", tp.get("pressing", {}).get("ppda", 10))),
+            "counterpress_rate": round(
+                sb.get("pressures_per_game", 0) and 
+                (tp.get("pressing", {}).get("counterpressures_per_game", 30) / 
+                 max(sb.get("pressures_per_game", 150), 1) * 100) or 20, 1),
+            "build_up_patience": 100 - (sb.get("directness", 30) if "directness" in sb else 
+                                        max(0, 100 - tp.get("build_up", {}).get("pass_accuracy", 80))),
+            "directness": sb.get("directness", 30),
+            "chance_quality": round(
+                sb.get("np_xg_per_game", tp.get("attacking", {}).get("np_xg_pg", 1.5)) / 
+                max(tp.get("attacking", {}).get("shots_pg", 12), 1), 3),
+            "defensive_line_height": tp.get("pressing", {}).get("defensive_distance", 40),
+            "width_usage": sb.get("width_usage", 5),
+            "set_piece_emphasis": sb.get("set_piece_emphasis", 20),
+            "transition_threat": sb.get("counter_attacking_shots_pg", 
+                                       tp.get("attacking", {}).get("counter_attacking_shots_pg", 1.0)),
+            "defensive_solidity": round(max(0, 3.0 - rp.get("conceded_per_game", 1.2)) * 33.3, 1),
+        }
+        
+        if self.model and self.model.get("scaler") and self.model.get("kmeans"):
+            feature_cols = self.model.get("feature_cols", MANAGER_DNA_FEATURES)
+            feature_vector = np.array([[features.get(f, 0) for f in feature_cols]])
+            scaled = self.model["scaler"].transform(feature_vector)
+            self.target_cluster = int(self.model["kmeans"].predict(scaled)[0])
+            self.target_cluster_name = self.model["cluster_names"].get(
+                self.target_cluster, "Balanced"
+            )
+        else:
+            self.target_cluster = 0
+            poss = features["possession"]
+            if poss >= 55:
+                self.target_cluster_name = "Possession-Based"
+            elif features["tackles"] >= 14:
+                self.target_cluster_name = "High-Press"
+            elif features["shots"] >= 14 and features["goals_scored"] >= 1.8:
+                self.target_cluster_name = "Attacking"
+            elif features["goals_conceded"] <= 1.0:
+                self.target_cluster_name = "Defensive"
+            elif poss <= 45:
+                self.target_cluster_name = "Counter-Attack"
+            else:
+                self.target_cluster_name = "Balanced"
+        
+        if verbose:
+            print(f"\n\u2713 Target Manager: {self.target_manager}")
+            print(f"  Team: {self.target_club}")
+            print(f"  Tactical Archetype: {self.target_cluster_name}")
+            print(f"  (Assigned from DNA, data mode: {manager_dna.get('data_mode', '?')})")
+        
+        return self
+    
+    def calculate_fit_scores_from_profiles(
+        self,
+        squad_profiles: list,
+        club_name: str = None,
+        verbose: bool = True
+    ) -> "SquadFitAnalyzer":
+        """
+        Calculate fit scores from pre-processed squad profiles.
+        
+        Works with profiles from either ETLPipeline or StatsBombETL,
+        bypassing the raw Sportsmonks data extraction.
+        """
+        if self.target_cluster is None and self.target_cluster_name is None:
+            raise ValueError("No target manager set. Run set_target_manager() or set_target_manager_from_dna() first.")
+        
+        if club_name:
+            self.target_club = club_name
+        
+        if verbose:
+            print("\n" + "=" * 60)
+            print("CALCULATING FIT SCORES (from profiles)")
+            print("=" * 60)
+        
+        self.squad_fit = []
+        
+        for profile in squad_profiles:
+            minutes = profile.get("minutes", 0)
+            if minutes < 90:
+                continue
+            
+            per90_factor = 90.0 / max(minutes, 90)
+            
+            features = {
+                "goals_per90": float(profile.get("goals", 0) or 0) * per90_factor,
+                "assists_per90": float(profile.get("assists", 0) or 0) * per90_factor,
+                "tackles_per90": float(profile.get("tackles", 0) or 0) * per90_factor,
+                "interceptions_per90": float(profile.get("interceptions", 0) or 0) * per90_factor,
+                "pass_accuracy": float(profile.get("pass_accuracy", 0) or 0) or 75.0,
+                "key_passes_per90": float(profile.get("key_passes", 0) or 0) * per90_factor,
+                "dribbles_per90": float(profile.get("dribbles", 0) or 0) * per90_factor,
+                "shots_per90": float(profile.get("shots", 0) or 0) * per90_factor,
+            }
+            
+            position = profile.get("position", "Unknown")
+            detailed_position = profile.get("detailed_position", position)
+            check = (detailed_position or position or "").lower()
+            
+            if "goal" in check:
+                position_group = "GK"
+            elif any(kw in check for kw in ["back", "defender", "centre-back", "center-back"]):
+                position_group = "DEF"
+            elif any(kw in check for kw in ["winger", "forward", "striker", "attacker", "centre-forward"]):
+                position_group = "ATT"
+            elif "attacking" in check and "midfield" in check:
+                position_group = "ATT"
+            elif "wing" in check and "back" not in check:
+                position_group = "ATT"
+            else:
+                position_group = "MID"
+            
+            fit_score = self._calculate_weighted_fit(
+                player_stats=features,
+                position_group=position_group
+            )
+            
+            classification = self._classify_score(fit_score)
+            
+            self.squad_fit.append(PlayerFit(
+                name=profile.get("name", "Unknown"),
+                position=position,
+                detailed_position=detailed_position,
+                position_group=position_group,
+                age=profile.get("age", 25),
+                fit_score=round(fit_score, 1),
+                classification=classification,
+                stats=features
+            ))
+        
+        self.squad_fit.sort(key=lambda x: x.fit_score, reverse=True)
+        
+        if verbose and self.squad_fit:
+            counts = {}
+            for p in self.squad_fit:
+                counts[p.classification] = counts.get(p.classification, 0) + 1
+            
+            print("\n\u2713 Classifications:")
+            for cls in ["Key Enabler", "Good Fit", "System Dependent", "Potentially Marginalised"]:
+                count = counts.get(cls, 0)
+                if count > 0:
+                    print(f"    {cls}: {count}")
+            
+            avg_fit = sum(p.fit_score for p in self.squad_fit) / len(self.squad_fit)
+            print(f"\n  Average Fit Score: {avg_fit:.1f}")
+        
+        self._generate_ideal_xi(verbose)
         
         return self
     

@@ -3,9 +3,14 @@ Aegis ETL Pipeline
 ==================
 Transform raw API data into analysis-ready structures.
 
-Supports two data modes:
-- AGGREGATED (default): Uses pre-aggregated team/season statistics
-- MATCH_LEVEL: Uses fixture-by-fixture data for custom analysis
+Supports three data modes:
+- AGGREGATED (default Sportsmonks): Uses pre-aggregated team/season statistics
+- MATCH_LEVEL (Sportsmonks): Uses fixture-by-fixture data for custom analysis
+- STATSBOMB: Uses StatsBomb team match stats + player season stats
+
+Both Sportsmonks (ETLPipeline) and StatsBomb (StatsBombETL) pipelines
+produce the same output format: manager_dna dict + squad_profiles list.
+This means analysis.py and visualizations.py work identically with either source.
 """
 
 import json
@@ -803,4 +808,585 @@ class ETLPipeline:
         
         print(f"\n      Output directory: {self.output_dir}")
         
+        return self
+
+
+# =============================================================================
+# STATSBOMB ETL PIPELINE
+# =============================================================================
+
+class StatsBombETL:
+    """
+    ETL Pipeline for transforming StatsBomb data into analysis-ready structures.
+    
+    Produces the SAME output format as ETLPipeline (manager_dna + squad_profiles)
+    so that analysis.py and visualizations.py work identically.
+    
+    Usage:
+        from aegis import StatsBombETL
+        
+        etl = StatsBombETL()
+        manager_dna, squad_profiles = etl.run()
+    """
+    
+    # StatsBomb position_id to Aegis position name
+    POSITION_MAP = {
+        1: "Goalkeeper",
+        2: "Defender", 3: "Defender", 4: "Defender",
+        5: "Defender", 6: "Defender",
+        7: "Defender", 8: "Defender",
+        9: "Midfielder", 10: "Midfielder", 11: "Midfielder",
+        12: "Midfielder", 13: "Midfielder", 14: "Midfielder",
+        15: "Midfielder", 16: "Midfielder",
+        17: "Attacker", 18: "Attacker", 19: "Attacker",
+        20: "Attacker", 21: "Attacker",
+        22: "Attacker", 23: "Attacker", 24: "Attacker", 25: "Attacker",
+    }
+    
+    DETAILED_POSITION_MAP = {
+        1: "Goalkeeper",
+        2: "Right-Back", 3: "Centre-Back", 4: "Centre-Back",
+        5: "Centre-Back", 6: "Left-Back",
+        7: "Wing-Back", 8: "Wing-Back",
+        9: "Defensive Midfield", 10: "Defensive Midfield", 11: "Defensive Midfield",
+        12: "Right Midfield", 13: "Central Midfield", 14: "Central Midfield",
+        15: "Central Midfield", 16: "Left Midfield",
+        17: "Right Winger", 18: "Attacking Midfield", 19: "Attacking Midfield",
+        20: "Attacking Midfield", 21: "Left Winger",
+        22: "Centre-Forward", 23: "Striker", 24: "Centre-Forward", 25: "Striker",
+    }
+    
+    def __init__(self, data_dir=None):
+        self.data_dir = Path(data_dir) if data_dir else Config.DATA_DIR
+        self.output_dir = Config.PROCESSED_DIR
+        
+        self.matches = None
+        self.team_info = None
+        self.team_match_stats = None
+        self.player_season_stats = None
+        self.lineups = None
+        self.manager_info = None
+        self.metadata = None
+        
+        self.manager_dna = None
+        self.squad_profiles = None
+        self.league_context = None
+    
+    def run(self):
+        """Run full StatsBomb ETL pipeline. Returns (manager_dna, squad_profiles)."""
+        print("\n" + "=" * 50)
+        print("AEGIS ETL PIPELINE (StatsBomb)")
+        print("=" * 50)
+        
+        self.load_raw_data()
+        self.extract_league_context()
+        self.extract_manager_dna()
+        self.extract_squad_profiles()
+        self.save()
+        
+        print("\n" + "=" * 50)
+        print("✓ ETL COMPLETE (StatsBomb)")
+        print("=" * 50)
+        
+        return self.manager_dna, self.squad_profiles
+    
+    def load_raw_data(self):
+        """Load raw StatsBomb JSON files."""
+        print("\n[1/5] Loading raw StatsBomb data...")
+        
+        def _load(filename):
+            path = self.data_dir / filename
+            if path.exists():
+                with open(path) as f:
+                    return json.load(f)
+            return None
+        
+        self.metadata = _load("metadata.json") or {"data_source": "statsbomb"}
+        self.matches = _load("sb_matches.json") or []
+        self.team_info = _load("sb_team_info.json") or {}
+        self.team_match_stats = _load("sb_team_match_stats.json") or []
+        self.player_season_stats = _load("sb_player_season_stats.json") or []
+        self.lineups = _load("sb_lineups.json") or []
+        self.manager_info = _load("sb_manager_info.json") or {}
+        
+        print(f"      ✓ Matches: {len(self.matches)}")
+        print(f"      ✓ Team: {self.team_info.get('name', 'Unknown')}")
+        print(f"      ✓ Team match stats: {len(self.team_match_stats)} records")
+        print(f"      ✓ Player season stats: {len(self.player_season_stats)} players")
+        print(f"      ✓ Manager: {self.manager_info.get('name', 'Unknown')}")
+        return self
+    
+    def extract_league_context(self):
+        """Extract league-wide benchmarks from match data."""
+        print("\n[2/5] Extracting league context...")
+        
+        comp_id = self.metadata.get("competition_id", "")
+        season_id = self.metadata.get("season_id", "")
+        
+        self.league_context = {
+            "season_name": f"Season {season_id}",
+            "league": f"Competition {comp_id}",
+            "avg_goals_per_game": 2.5,
+            "avg_possession_home": 52,
+            "total_matches": len(self.matches),
+        }
+        
+        total_goals = 0
+        match_count = 0
+        for match in self.matches:
+            hs = match.get("home_score")
+            aws = match.get("away_score")
+            if hs is not None and aws is not None:
+                total_goals += hs + aws
+                match_count += 1
+        
+        if match_count > 0:
+            self.league_context["avg_goals_per_game"] = round(total_goals / match_count, 2)
+        
+        print(f"      ✓ Matches: {match_count}")
+        print(f"      ✓ Avg goals/game: {self.league_context['avg_goals_per_game']}")
+        return self
+    
+    def extract_manager_dna(self):
+        """
+        Extract manager tactical profile from StatsBomb team match stats.
+        
+        Uses team_match_stats for: possession, passing ratio, PPDA,
+        xG, OBV, pressures, deep completions, etc.
+        """
+        print("\n[3/5] Extracting manager DNA (StatsBomb)...")
+        
+        team_id = self.team_info.get("id")
+        
+        if not self.team_match_stats or not team_id:
+            print("      ⚠ No team match stats available")
+            self.manager_dna = self._default_manager_dna()
+            return self
+        
+        our_stats = [s for s in self.team_match_stats if s.get("team_id") == team_id]
+        
+        if not our_stats:
+            print(f"      ⚠ No stats found for team_id={team_id}")
+            self.manager_dna = self._default_manager_dna()
+            return self
+        
+        def avg(key, default=0):
+            vals = [s.get(key) for s in our_stats if s.get(key) is not None]
+            return round(sum(vals) / len(vals), 2) if vals else default
+        
+        # Results from match data
+        wins = draws = losses = goals_for = goals_against = clean_sheets = 0
+        for match in (self.matches or []):
+            home = match.get("home_team", {})
+            away = match.get("away_team", {})
+            home_id = home.get("home_team_id", home.get("id"))
+            away_id = away.get("away_team_id", away.get("id"))
+            hs = match.get("home_score", 0) or 0
+            aws = match.get("away_score", 0) or 0
+            
+            if home_id == team_id:
+                goals_for += hs; goals_against += aws
+                if aws == 0: clean_sheets += 1
+                if hs > aws: wins += 1
+                elif hs < aws: losses += 1
+                else: draws += 1
+            elif away_id == team_id:
+                goals_for += aws; goals_against += hs
+                if hs == 0: clean_sheets += 1
+                if aws > hs: wins += 1
+                elif aws < hs: losses += 1
+                else: draws += 1
+        
+        total_matches = (wins + draws + losses) or 1
+        
+        possession = avg("team_match_possession", 50.0)
+        passing_ratio = avg("team_match_passing_ratio", 80.0)
+        ppda = avg("team_match_ppda", 10.0)
+        defensive_distance = avg("team_match_defensive_distance", 40.0)
+        np_xg = avg("team_match_np_xg", 1.5)
+        np_xg_conceded = avg("team_match_np_xg_conceded", 1.2)
+        np_shots = avg("team_match_np_shots", 12.0)
+        obv = avg("team_match_obv", 0.0)
+        deep_completions = avg("team_match_deep_completions", 5.0)
+        deep_progressions = avg("team_match_deep_progressions", 20.0)
+        pressures = avg("team_match_pressures", 150.0)
+        counterpressures = avg("team_match_counterpressures", 30.0)
+        counter_shots = avg("team_match_counter_attacking_shots", 1.0)
+        high_press_shots = avg("team_match_high_press_shots", 0.5)
+        
+        # Additional pillar metrics
+        directness_raw = avg("team_match_directness", 0.3)
+        pace_towards_goal = avg("team_match_pace_towards_goal", 1.0)
+        crosses_into_box = avg("team_match_crosses_into_box", 5.0)
+        box_cross_ratio = avg("team_match_box_cross_ratio", 30.0)
+        sp_xg = avg("team_match_sp_xg", 0.3)
+        op_xg = avg("team_match_op_xg", 1.0)
+        sp_xg_conceded = avg("team_match_sp_xg_conceded", 0.3)
+        pressure_regains = avg("team_match_pressure_regains", 20)
+        counterpressure_regains = avg("team_match_counterpressure_regains", 5)
+        deep_completions_conceded = avg("team_match_deep_completions_conceded", 5.0)
+        deep_progs_conceded = avg("team_match_deep_progressions_conceded", 20.0)
+        possessions_pg = avg("team_match_possessions", 50)
+        
+        # Derived pillar scores
+        pressing_intensity = round(max(1, 30 - ppda) * 1.5, 1)
+        counterpress_rate = round(counterpressures / max(pressures, 1) * 100, 1)
+        total_xg = sp_xg + op_xg
+        set_piece_emphasis = round(sp_xg / max(total_xg, 0.01) * 100, 1)
+        xg_per_shot = round(np_xg / max(np_shots, 1), 3)
+        
+        formation_profile = self._analyse_formations_sb()
+        
+        self.manager_dna = {
+            "manager": self.manager_info.get("name", "Unknown"),
+            "team": self.team_info.get("name", "Unknown"),
+            "matches_analysed": total_matches,
+            "data_mode": "statsbomb",
+            "formation_profile": formation_profile,
+            "results_profile": {
+                "wins": wins, "draws": draws, "losses": losses,
+                "win_rate": round(wins / total_matches * 100, 1),
+                "win_rate_home": 0, "win_rate_away": 0,
+                "points_per_game": round((wins * 3 + draws) / total_matches, 2),
+                "goals_per_game": round(goals_for / total_matches, 2),
+                "conceded_per_game": round(goals_against / total_matches, 2),
+                "clean_sheet_pct": round(clean_sheets / total_matches * 100, 1),
+            },
+            "tactical_profile": {
+                "possession": {"avg": possession},
+                "pressing": {
+                    "intensity": {"avg": pressing_intensity},
+                    "ppda": ppda,
+                    "pressures_per_game": pressures,
+                    "counterpressures_per_game": counterpressures,
+                    "counterpress_rate": counterpress_rate,
+                    "pressure_regains_pg": pressure_regains,
+                    "defensive_distance": defensive_distance,
+                    "high_press_shots_pg": high_press_shots,
+                },
+                "build_up": {
+                    "pass_accuracy": passing_ratio,
+                    "directness": round(directness_raw * 100, 1),
+                    "pace_towards_goal": pace_towards_goal,
+                    "deep_completions_pg": deep_completions,
+                    "deep_progressions_pg": deep_progressions,
+                },
+                "attacking": {
+                    "shots_pg": np_shots,
+                    "shots_on_target_pg": round(np_shots * 0.33, 1),
+                    "np_xg_pg": np_xg,
+                    "xg_per_shot": xg_per_shot,
+                    "np_xg_conceded_pg": np_xg_conceded,
+                    "obv_pg": obv,
+                    "counter_attacking_shots_pg": counter_shots,
+                    "crosses_into_box_pg": crosses_into_box,
+                    "box_cross_ratio": box_cross_ratio,
+                }
+            },
+            
+            # Gary's 8-pillar scores (0-100 scale for radar chart)
+            "pillar_scores": {
+                "shape_occupation": min(100, round(possession * 1.2 + round(clean_sheets / total_matches * 100, 1) * 0.3, 0)),
+                "build_up": min(100, round(passing_ratio, 0)),
+                "chance_creation": min(100, round(np_xg * 40, 0)),
+                "press_counterpress": min(100, round(max(0, 30 - ppda) * 4, 0)),
+                "block_line_height": min(100, round(defensive_distance * 1.5 + max(0, 2 - round(goals_against / total_matches, 2)) * 20, 0)),
+                "transitions": min(100, round(counter_shots * 25 + high_press_shots * 20, 0)),
+                "width_overloads": min(100, round(crosses_into_box * 10, 0)),
+                "set_pieces": min(100, round(set_piece_emphasis * 2, 0)),
+            },
+            
+            "statsbomb_enhanced": {
+                "ppda": ppda,
+                "np_xg_per_game": np_xg,
+                "np_xg_conceded_per_game": np_xg_conceded,
+                "xg_difference": round(np_xg - np_xg_conceded, 2),
+                "xg_per_shot": xg_per_shot,
+                "obv_per_game": obv,
+                "deep_completions_pg": deep_completions,
+                "deep_progressions_pg": deep_progressions,
+                "pressures_per_game": pressures,
+                "counterpress_rate": counterpress_rate,
+                "pressure_regains_pg": pressure_regains,
+                "counter_attacking_shots_pg": counter_shots,
+                "high_press_shots_pg": high_press_shots,
+                "directness": round(directness_raw * 100, 1),
+                "pace_towards_goal": pace_towards_goal,
+                "width_usage": crosses_into_box,
+                "box_cross_ratio": box_cross_ratio,
+                "set_piece_emphasis": set_piece_emphasis,
+                "sp_xg_pg": sp_xg,
+                "sp_xg_conceded_pg": sp_xg_conceded,
+                "defensive_distance": defensive_distance,
+                "deep_completions_conceded_pg": deep_completions_conceded,
+            }
+        }
+        
+        print(f"      ✓ Win rate: {self.manager_dna['results_profile']['win_rate']:.1f}%")
+        print(f"      ✓ Possession: {possession:.1f}%  Pass acc: {passing_ratio:.1f}%")
+        print(f"      ✓ PPDA: {ppda:.1f}  xG: {np_xg:.2f}  xGA: {np_xg_conceded:.2f}")
+        print(f"      ✓ OBV/g: {obv:.3f}  Deep prog: {deep_progressions:.1f}")
+        return self
+    
+    def _analyse_formations_sb(self) -> Dict:
+        """Analyse formation usage from StatsBomb lineups."""
+        formations = defaultdict(int)
+        for lineup_data in (self.lineups or []):
+            for team_lineup in lineup_data.get("lineups", []):
+                if team_lineup.get("team_id") != self.team_info.get("id"):
+                    continue
+                for formation_obj in team_lineup.get("formations", []):
+                    formation = formation_obj.get("formation")
+                    if formation:
+                        f_str = str(formation)
+                        if len(f_str) >= 3 and "-" not in f_str:
+                            f_str = "-".join(f_str)
+                        formations[f_str] += 1
+        
+        total = sum(formations.values()) or 1
+        formation_pcts = {k: round(v / total * 100, 1) for k, v in formations.items()}
+        primary = max(formations, key=formations.get) if formations else "4-3-3"
+        
+        return {
+            "primary": primary,
+            "usage": dict(formations),
+            "percentages": formation_pcts,
+            "flexibility_score": len(formations)
+        }
+    
+    def _default_manager_dna(self) -> Dict:
+        return {
+            "manager": "Unknown", "matches_analysed": 0, "data_mode": "none",
+            "formation_profile": {"primary": "4-4-2", "flexibility_score": 1},
+            "results_profile": {"win_rate": 33, "points_per_game": 1.33, "conceded_per_game": 1.2},
+            "tactical_profile": {
+                "possession": {"avg": 50},
+                "pressing": {"intensity": {"avg": 20}},
+                "build_up": {"pass_accuracy": 80},
+                "attacking": {"shots_pg": 12}
+            }
+        }
+    
+    def extract_squad_profiles(self):
+        """
+        Extract player profiles from StatsBomb player season stats.
+        
+        Position resolution strategy (primary_position is often None):
+        1. Try primary_position from season stats
+        2. Fall back to lineup position data (most reliable)
+        3. Fall back to stat-based heuristic (GK saves, DEF tackles, ATT goals)
+        """
+        print("\n[4/5] Extracting squad profiles (StatsBomb)...")
+        
+        if not self.player_season_stats:
+            print("      ⚠ No player season stats loaded")
+            self.squad_profiles = []
+            return self
+        
+        team_id = self.team_info.get("id")
+        team_name = self.team_info.get("name", "")
+        
+        team_players = [
+            p for p in self.player_season_stats
+            if p.get("team_id") == team_id
+        ]
+        if not team_players:
+            team_players = [
+                p for p in self.player_season_stats
+                if team_name.lower() in (p.get("team_name", "") or "").lower()
+            ]
+        
+        # Build player_id → position lookup from lineups
+        lineup_positions = self._build_position_lookup_from_lineups()
+        
+        profiles = []
+        pos_resolved = {"season_stats": 0, "lineup": 0, "heuristic": 0, "unknown": 0}
+        
+        for p in team_players:
+            minutes = p.get("player_season_minutes", 0) or 0
+            if minutes < 90:
+                continue
+            
+            nineties = minutes / 90.0
+            player_id = p.get("player_id")
+            
+            # Position resolution chain
+            primary_pos = p.get("primary_position")
+            position = None
+            detailed_position = None
+            
+            # 1. Try season stats primary_position
+            if primary_pos and primary_pos in self.POSITION_MAP:
+                position = self.POSITION_MAP[primary_pos]
+                detailed_position = self.DETAILED_POSITION_MAP.get(primary_pos, position)
+                pos_resolved["season_stats"] += 1
+            
+            # 2. Fall back to lineup data
+            if not position or position == "Unknown":
+                lineup_pos = lineup_positions.get(player_id)
+                if lineup_pos:
+                    pos_id = lineup_pos.get("position_id")
+                    position = self.POSITION_MAP.get(pos_id, None)
+                    detailed_position = self.DETAILED_POSITION_MAP.get(
+                        pos_id, lineup_pos.get("position_name", position)
+                    )
+                    if position:
+                        pos_resolved["lineup"] += 1
+            
+            # 3. Fall back to stat-based heuristic
+            if not position or position == "Unknown":
+                position, detailed_position = self._infer_position_from_stats(p, nineties)
+                if position != "Unknown":
+                    pos_resolved["heuristic"] += 1
+                else:
+                    pos_resolved["unknown"] += 1
+            
+            age = 25
+            dob = p.get("birth_date")
+            if dob:
+                try:
+                    birth = datetime.strptime(str(dob)[:10], "%Y-%m-%d")
+                    today = datetime.now()
+                    age = today.year - birth.year - (
+                        (today.month, today.day) < (birth.month, birth.day)
+                    )
+                except (ValueError, TypeError):
+                    pass
+            
+            profile = {
+                "id": player_id,
+                "name": p.get("player_name", "Unknown"),
+                "age": age,
+                "position": position or "Unknown",
+                "detailed_position": detailed_position or position or "Unknown",
+                "jersey_number": None,
+                "appearances": int(p.get("player_season_appearances", 0) or 0),
+                "minutes": minutes,
+                "goals": round((p.get("player_season_goals_90", 0) or 0) * nineties),
+                "assists": round((p.get("player_season_assists_90", 0) or 0) * nineties),
+                "clean_sheets": 0,
+                "saves": 0,
+                "tackles": round((p.get("player_season_tackles_90", 0) or 0) * nineties),
+                "interceptions": round((p.get("player_season_interceptions_90", 0) or 0) * nineties),
+                "clearances": round((p.get("player_season_clearance_90", 0) or 0) * nineties),
+                "pass_accuracy": p.get("player_season_passing_ratio", 0) or 0,
+                "key_passes": round((p.get("player_season_key_passes_90", 0) or 0) * nineties),
+                "dribbles": round((p.get("player_season_dribbles_90", 0) or 0) * nineties),
+                "shots": round((p.get("player_season_np_shots_90", 0) or 0) * nineties),
+                "shots_on_target": 0,
+                "rating": 0,
+                "np_xg": round((p.get("player_season_np_xg_90", 0) or 0) * nineties, 2),
+                "xa": round((p.get("player_season_xa_90", 0) or 0) * nineties, 2),
+                "obv": round((p.get("player_season_obv_90", 0) or 0) * nineties, 3),
+                "obv_pass": round((p.get("player_season_obv_pass_90", 0) or 0) * nineties, 3),
+                "obv_dribble_carry": round((p.get("player_season_obv_dribble_carry_90", 0) or 0) * nineties, 3),
+                "obv_defensive": round((p.get("player_season_obv_defensive_action_90", 0) or 0) * nineties, 3),
+                "pressures_90": p.get("player_season_pressures_90", 0) or 0,
+                "deep_progressions_90": p.get("player_season_deep_progressions_90", 0) or 0,
+                "xg_chain_90": p.get("player_season_xgchain_90", 0) or 0,
+                "xg_buildup_90": p.get("player_season_xgbuildup_90", 0) or 0,
+                "challenge_ratio": p.get("player_season_challenge_ratio", 0) or 0,
+                "aerial_ratio": p.get("player_season_aerial_ratio", 0) or 0,
+            }
+            profiles.append(profile)
+        
+        self.squad_profiles = profiles
+        print(f"      ✓ Processed {len(profiles)} players")
+        print(f"      ✓ Positions: stats={pos_resolved['season_stats']}, "
+              f"lineup={pos_resolved['lineup']}, heuristic={pos_resolved['heuristic']}, "
+              f"unknown={pos_resolved['unknown']}")
+        return self
+    
+    def _build_position_lookup_from_lineups(self) -> Dict:
+        """Build player_id → {position_id, position_name} from lineup data."""
+        from collections import Counter
+        
+        player_positions = defaultdict(list)
+        player_pos_names = {}
+        team_id = self.team_info.get("id")
+        
+        for lineup_data in (self.lineups or []):
+            for team_lineup in lineup_data.get("lineups", []):
+                if team_lineup.get("team_id") != team_id:
+                    continue
+                for player in team_lineup.get("lineup", []):
+                    pid = player.get("player_id")
+                    if not pid:
+                        continue
+                    for pos_entry in player.get("positions", []):
+                        pos_id = pos_entry.get("position_id")
+                        pos_name = pos_entry.get("position")
+                        if pos_id:
+                            player_positions[pid].append(pos_id)
+                            if pos_name:
+                                player_pos_names[(pid, pos_id)] = pos_name
+        
+        result = {}
+        for pid, pos_ids in player_positions.items():
+            most_common = Counter(pos_ids).most_common(1)[0][0]
+            result[pid] = {
+                "position_id": most_common,
+                "position_name": player_pos_names.get((pid, most_common), "")
+            }
+        
+        if result:
+            print(f"      ✓ Position lookup from lineups: {len(result)} players")
+        return result
+    
+    def _infer_position_from_stats(self, p: Dict, nineties: float) -> tuple:
+        """Infer position from statistical profile when no position data exists."""
+        tackles_90 = p.get("player_season_tackles_90", 0) or 0
+        interceptions_90 = p.get("player_season_interceptions_90", 0) or 0
+        goals_90 = p.get("player_season_goals_90", 0) or 0
+        np_shots_90 = p.get("player_season_np_shots_90", 0) or 0
+        np_xg_90 = p.get("player_season_np_xg_90", 0) or 0
+        key_passes_90 = p.get("player_season_key_passes_90", 0) or 0
+        save_ratio = p.get("player_season_save_ratio", 0) or 0
+        goals_faced_90 = p.get("player_season_goals_faced_90", 0) or 0
+        clearance_90 = p.get("player_season_clearance_90", 0) or 0
+        dribbles_90 = p.get("player_season_dribbles_90", 0) or 0
+        
+        if save_ratio > 0 or goals_faced_90 > 0:
+            return "Goalkeeper", "Goalkeeper"
+        
+        defensive = tackles_90 + interceptions_90 + clearance_90
+        attacking = goals_90 + np_xg_90 + (np_shots_90 * 0.1) + dribbles_90
+        
+        if defensive > 4.0 and attacking < 0.5:
+            return "Defender", "Centre-Back"
+        if defensive > 3.0 and attacking < 1.0:
+            return "Defender", "Defender"
+        if goals_90 > 0.3 or np_xg_90 > 0.3 or np_shots_90 > 2.5:
+            return "Attacker", "Winger" if dribbles_90 > 1.5 else "Centre-Forward"
+        if (goals_90 > 0.15 or np_xg_90 > 0.15) and key_passes_90 > 1.0:
+            return "Attacker", "Attacking Midfield"
+        if defensive > 2.0:
+            return "Midfielder", "Defensive Midfield"
+        return "Midfielder", "Central Midfield"
+    
+    def save(self):
+        """Save processed data (same format as ETLPipeline)."""
+        print("\n[5/5] Saving outputs...")
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        
+        if self.manager_dna:
+            with open(self.output_dir / "manager_dna.json", "w") as f:
+                json.dump(self.manager_dna, f, indent=2)
+            print(f"      ✓ manager_dna.json")
+        
+        if self.league_context:
+            with open(self.output_dir / "league_context.json", "w") as f:
+                json.dump(self.league_context, f, indent=2)
+            print(f"      ✓ league_context.json")
+        
+        if self.squad_profiles:
+            csv_path = self.output_dir / "squad_profiles.csv"
+            with open(csv_path, "w", newline="") as f:
+                if self.squad_profiles:
+                    writer = csv.DictWriter(f, fieldnames=self.squad_profiles[0].keys())
+                    writer.writeheader()
+                    writer.writerows(self.squad_profiles)
+            print(f"      ✓ squad_profiles.csv")
+        
+        print(f"\n      Output directory: {self.output_dir}")
         return self

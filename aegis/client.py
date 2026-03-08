@@ -1,19 +1,24 @@
 """
-Aegis Sportsmonks Client
-========================
-API client for Sportsmonks Football API v3.
+Aegis API Clients
+=================
+API clients for Sportsmonks Football API v3 and Hudl StatsBomb API.
 
-Statistics Strategy:
+Sportsmonks Statistics Strategy:
 - DEFAULT: Use dedicated /teams/{id}?include=statistics and /players/{id}?include=statistics.details
   These return pre-aggregated season stats with home/away splits and averages.
 - OPTIONAL: Use /fixtures/{id}?include=statistics for match-level granularity when needed.
+
+StatsBomb Statistics Strategy:
+- Competitions → Matches → Events / Lineups / Player Stats / Team Stats
+- Pre-computed season stats via Player Season Stats and Team Match Stats APIs
+- Rich event-level data with xG, xA, OBV, PPDA, progressive actions
 """
 
 import os
 import time
 import json
 import requests
-from typing import Optional, Dict, List, Any
+from typing import Optional, Dict, List, Any, Tuple
 from datetime import datetime
 
 from .config import Config
@@ -732,6 +737,711 @@ class SportsmonksClient:
         # Save metadata
         metadata = {
             "fetch_type": "aggregated" if use_aggregated else "match_level",
+            "timestamp": datetime.now().isoformat()
+        }
+        with open(Config.DATA_DIR / "metadata.json", "w") as f:
+            json.dump(metadata, f, indent=2)
+        
+        print(f"\n      Files saved to: {Config.DATA_DIR}")
+
+
+# =============================================================================
+# STATSBOMB CLIENT
+# =============================================================================
+
+class StatsBombClient:
+    """
+    Hudl StatsBomb API client with rate limiting and caching.
+    
+    Provides access to all 9 StatsBomb API endpoints:
+    - Competitions, Matches, Lineups, Events, 360 Frames
+    - Player Match Stats, Player Season Stats
+    - Team Match Stats, Player Mapping
+    
+    Usage:
+        from aegis import StatsBombClient
+        
+        # Initialize with credentials
+        client = StatsBombClient(username="you@email.com", password="your_password")
+        
+        # Or set environment variables SB_USERNAME / SB_PASSWORD
+        client = StatsBombClient()
+        
+        # Get competitions you have access to
+        comps = client.get_competitions()
+        
+        # Get matches for a competition/season
+        matches = client.get_matches(competition_id=2, season_id=282)
+        
+        # Full scenario fetch (like SportsmonksClient.fetch_scenario)
+        data = client.fetch_scenario(
+            competition_id=2,       # Premier League
+            season_id=282,          # 2024/25
+            team_name="Tottenham"
+        )
+    """
+    
+    def __init__(
+        self,
+        username: Optional[str] = None,
+        password: Optional[str] = None
+    ):
+        """
+        Initialize StatsBomb client.
+        
+        Args:
+            username: StatsBomb username (email). If not provided, reads SB_USERNAME env var.
+            password: StatsBomb password. If not provided, reads SB_PASSWORD env var.
+        """
+        self.username = username or os.environ.get("SB_USERNAME")
+        self.password = password or os.environ.get("SB_PASSWORD")
+        
+        if not self.username or not self.password:
+            raise ValueError(
+                "StatsBomb credentials required.\n"
+                "Set with:\n"
+                '  os.environ["SB_USERNAME"] = "your_email"\n'
+                '  os.environ["SB_PASSWORD"] = "your_password"\n'
+                "Or pass: StatsBombClient(username='...', password='...')"
+            )
+        
+        self.base_url = Config.STATSBOMB_BASE_URL
+        self.alt_url = Config.STATSBOMB_ALT_URL
+        self.session = requests.Session()
+        self.session.auth = (self.username, self.password)
+        self.last_request_time = 0
+        self.min_request_interval = 1.0 / Config.STATSBOMB_REQUESTS_PER_SECOND
+        self.versions = Config.STATSBOMB_API_VERSIONS
+        
+        # Ensure directories exist
+        Config.setup()
+    
+    # =========================================================================
+    # INTERNAL METHODS
+    # =========================================================================
+    
+    def _rate_limit(self):
+        """Enforce rate limiting between requests."""
+        elapsed = time.time() - self.last_request_time
+        if elapsed < self.min_request_interval:
+            time.sleep(self.min_request_interval - elapsed)
+        self.last_request_time = time.time()
+    
+    def _request(self, url: str) -> Any:
+        """
+        Make rate-limited, authenticated API request.
+        
+        Args:
+            url: Full API URL
+            
+        Returns:
+            Parsed JSON response
+        """
+        self._rate_limit()
+        
+        response = self.session.get(url)
+        
+        if response.status_code == 429:
+            retry_after = int(response.headers.get("Retry-After", 60))
+            print(f"⏳ Rate limited. Waiting {retry_after}s...")
+            time.sleep(retry_after)
+            return self._request(url)
+        
+        if response.status_code == 404:
+            return []
+        
+        if response.status_code == 401:
+            raise ValueError(
+                "StatsBomb authentication failed. Check your username and password."
+            )
+        
+        response.raise_for_status()
+        return response.json()
+    
+    # =========================================================================
+    # COMPETITIONS
+    # =========================================================================
+    
+    def get_competitions(self, use_cache: bool = True) -> List[Dict]:
+        """
+        Get all competition/season combinations the user has access to.
+        
+        Returns:
+            List of {competition_id, season_id, competition_name, 
+                     season_name, country_name, ...}
+        """
+        cache_file = Config.CACHE_DIR / "sb_competitions.json"
+        
+        if use_cache and cache_file.exists():
+            cache_age = time.time() - cache_file.stat().st_mtime
+            if cache_age < 86400:
+                with open(cache_file) as f:
+                    return json.load(f)
+        
+        v = self.versions["competitions"]
+        url = f"{self.base_url}/api/{v}/competitions"
+        data = self._request(url)
+        
+        Config.CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        with open(cache_file, "w") as f:
+            json.dump(data, f, indent=2)
+        
+        return data
+    
+    def find_competition(
+        self,
+        competition_name: str = None,
+        country_name: str = None,
+        season_name: str = None
+    ) -> List[Dict]:
+        """
+        Search available competitions by name/country/season.
+        
+        Args:
+            competition_name: e.g. "Premier League"
+            country_name: e.g. "England"
+            season_name: e.g. "2024/2025"
+            
+        Returns:
+            Matching competition-season entries
+        """
+        comps = self.get_competitions()
+        results = []
+        for c in comps:
+            if competition_name and competition_name.lower() not in c.get("competition_name", "").lower():
+                continue
+            if country_name and country_name.lower() not in c.get("country_name", "").lower():
+                continue
+            if season_name and season_name not in c.get("season_name", ""):
+                continue
+            results.append(c)
+        return results
+    
+    # =========================================================================
+    # MATCHES
+    # =========================================================================
+    
+    def get_matches(
+        self,
+        competition_id: int,
+        season_id: int,
+        use_cache: bool = True
+    ) -> List[Dict]:
+        """
+        Get all matches for a competition/season.
+        
+        Returns:
+            List of match objects with match_id, home_team, away_team,
+            home_score, away_score, match_date, managers, etc.
+        """
+        cache_file = Config.CACHE_DIR / f"sb_matches_{competition_id}_{season_id}.json"
+        
+        if use_cache and cache_file.exists():
+            cache_age = time.time() - cache_file.stat().st_mtime
+            if cache_age < 3600:
+                with open(cache_file) as f:
+                    return json.load(f)
+        
+        v = self.versions["matches"]
+        url = f"{self.base_url}/api/{v}/competitions/{competition_id}/seasons/{season_id}/matches"
+        data = self._request(url)
+        
+        Config.CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        with open(cache_file, "w") as f:
+            json.dump(data, f, indent=2)
+        
+        return data
+    
+    def get_matches_for_team(
+        self,
+        competition_id: int,
+        season_id: int,
+        team_name: str
+    ) -> Tuple[List[Dict], Dict]:
+        """
+        Get all matches for a specific team in a competition/season.
+        
+        Args:
+            competition_id: StatsBomb competition ID
+            season_id: StatsBomb season ID
+            team_name: Team name to filter by (partial match)
+            
+        Returns:
+            Tuple of (matching_matches, team_info_dict)
+        """
+        all_matches = self.get_matches(competition_id, season_id)
+        
+        if not all_matches:
+            print(f"      ⚠ No matches returned for comp={competition_id}, season={season_id}")
+            print(f"        Check your licensed competitions with get_competitions()")
+            return [], {}
+        
+        team_matches = []
+        team_info = {}
+        
+        # Collect all team names for diagnostic if no match found
+        all_team_names = set()
+        
+        for match in all_matches:
+            home = match.get("home_team", {})
+            away = match.get("away_team", {})
+            
+            # StatsBomb uses multiple possible key names depending on API version
+            home_name = (
+                home.get("home_team_name") or 
+                home.get("name") or 
+                home.get("team_name") or 
+                ""
+            )
+            away_name = (
+                away.get("away_team_name") or 
+                away.get("name") or 
+                away.get("team_name") or 
+                ""
+            )
+            
+            home_id = home.get("home_team_id") or home.get("id") or home.get("team_id")
+            away_id = away.get("away_team_id") or away.get("id") or away.get("team_id")
+            
+            all_team_names.add(home_name)
+            all_team_names.add(away_name)
+            
+            if team_name.lower() in home_name.lower():
+                team_matches.append(match)
+                if not team_info:
+                    team_info = {"id": home_id, "name": home_name}
+            elif team_name.lower() in away_name.lower():
+                team_matches.append(match)
+                if not team_info:
+                    team_info = {"id": away_id, "name": away_name}
+        
+        if not team_matches:
+            print(f"\n      ⚠ No matches found for '{team_name}'")
+            print(f"        {len(all_matches)} matches returned, teams found:")
+            for name in sorted(all_team_names):
+                if name:
+                    print(f"          • {name}")
+            
+            # Dump first match structure for debugging
+            if all_matches:
+                sample = all_matches[0]
+                print(f"\n        Sample match keys: {list(sample.keys())}")
+                print(f"        home_team structure: {sample.get('home_team', {})}")
+                print(f"        away_team structure: {sample.get('away_team', {})}")
+        
+        return team_matches, team_info
+    
+    # =========================================================================
+    # LINEUPS
+    # =========================================================================
+    
+    def get_lineups(self, match_id: int) -> List[Dict]:
+        """
+        Get team lineups for a match.
+        
+        Returns:
+            List of team lineup objects with team_id, team_name, lineup array,
+            formations array, events array.
+        """
+        v = self.versions["lineups"]
+        url = f"{self.alt_url}/api/{v}/lineups/{match_id}"
+        return self._request(url)
+    
+    # =========================================================================
+    # EVENTS
+    # =========================================================================
+    
+    def get_events(self, match_id: int) -> List[Dict]:
+        """
+        Get all events for a match (passes, shots, tackles, etc.).
+        
+        Returns rich event-level data including xG, OBV, locations,
+        freeze frames, and more.
+        """
+        v = self.versions["events"]
+        url = f"{self.base_url}/api/{v}/events/{match_id}"
+        return self._request(url)
+    
+    # =========================================================================
+    # 360 FRAMES
+    # =========================================================================
+    
+    def get_360_frames(self, match_id: int) -> List[Dict]:
+        """
+        Get 360 freeze frame data for a match.
+        
+        Returns positional data for visible players at each event.
+        """
+        v = self.versions["360_frames"]
+        url = f"{self.base_url}/api/{v}/360-frames/{match_id}"
+        return self._request(url)
+    
+    # =========================================================================
+    # PLAYER MATCH STATS
+    # =========================================================================
+    
+    def get_player_match_stats(self, match_id: int) -> List[Dict]:
+        """
+        Get pre-computed player statistics for a match.
+        
+        Returns per-player stats including: goals, assists, xG, xA,
+        OBV, passes, tackles, interceptions, pressures, dribbles,
+        key passes, and many more (~100+ metrics per player).
+        """
+        v = self.versions["player_match_stats"]
+        url = f"{self.base_url}/api/{v}/matches/{match_id}/player-stats"
+        return self._request(url)
+    
+    # =========================================================================
+    # PLAYER SEASON STATS
+    # =========================================================================
+    
+    def get_player_season_stats(
+        self,
+        competition_id: int,
+        season_id: int,
+        use_cache: bool = True
+    ) -> List[Dict]:
+        """
+        Get pre-computed per-90 player statistics for a full season.
+        
+        This is the primary endpoint for building squad profiles.
+        Returns ~100+ per-90 metrics per player including:
+        - Goals, assists, xG, xA, OBV
+        - Passes, passing ratio, key passes
+        - Tackles, interceptions, pressures
+        - Dribbles, carries, progressive actions
+        - Aerial duels, clearances, etc.
+        """
+        cache_file = Config.CACHE_DIR / f"sb_player_season_{competition_id}_{season_id}.json"
+        
+        if use_cache and cache_file.exists():
+            cache_age = time.time() - cache_file.stat().st_mtime
+            if cache_age < 3600:
+                with open(cache_file) as f:
+                    return json.load(f)
+        
+        v = self.versions["player_season_stats"]
+        url = f"{self.base_url}/api/{v}/competitions/{competition_id}/seasons/{season_id}/player-stats"
+        data = self._request(url)
+        
+        Config.CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        with open(cache_file, "w") as f:
+            json.dump(data, f, indent=2)
+        
+        return data
+    
+    # =========================================================================
+    # TEAM MATCH STATS
+    # =========================================================================
+    
+    def get_team_match_stats(self, match_id: int) -> List[Dict]:
+        """
+        Get pre-computed team statistics for a match.
+        
+        Returns rich team-level metrics including:
+        - Possession, passing ratio, PPDA
+        - xG, xG conceded, shots, shot distance
+        - OBV (overall and by action type)
+        - Pressing, counterpressing, defensive distance
+        - Deep completions, deep progressions
+        - Set piece breakdowns (corners, free kicks, throw-ins)
+        """
+        v = self.versions["team_match_stats"]
+        url = f"{self.alt_url}/api/{v}/matches/{match_id}/team-stats"
+        return self._request(url)
+    
+    # =========================================================================
+    # PLAYER MAPPING
+    # =========================================================================
+    
+    def get_player_mapping(
+        self,
+        competition_id: int = None,
+        season_id: int = None,
+        offline_player_id: int = None,
+        all_account_data: bool = False
+    ) -> List[Dict]:
+        """
+        Get player ID mapping across StatsBomb systems.
+        
+        Useful for cross-referencing players across different data sources.
+        """
+        v = self.versions["player_mapping"]
+        params = []
+        
+        if competition_id:
+            params.append(f"competition-id={competition_id}")
+        if season_id:
+            params.append(f"season-id={season_id}")
+        if offline_player_id:
+            params.append(f"offline-player-id={offline_player_id}")
+        if all_account_data:
+            params.append("all-account-data=true")
+        
+        param_str = "&".join(params)
+        url = f"{self.alt_url}/api/{v}/player-mapping?{param_str}"
+        return self._request(url)
+    
+    # =========================================================================
+    # DIAGNOSTICS
+    # =========================================================================
+    
+    def diagnose(self):
+        """
+        Print a diagnostic summary of all competitions/seasons you have access to,
+        organised by country and competition. Run this first to find the right IDs.
+        """
+        comps = self.get_competitions()
+        
+        print("=" * 70)
+        print("STATSBOMB ACCOUNT DIAGNOSTICS")
+        print("=" * 70)
+        print(f"\nTotal competition-season combinations: {len(comps)}\n")
+        
+        # Group by country → competition → seasons
+        from collections import defaultdict
+        grouped = defaultdict(lambda: defaultdict(list))
+        
+        for c in comps:
+            country = c.get("country_name", "Unknown")
+            comp_name = c.get("competition_name", "Unknown")
+            grouped[country][comp_name].append(c)
+        
+        for country in sorted(grouped.keys()):
+            print(f"\n🏴 {country}")
+            for comp_name in sorted(grouped[country].keys()):
+                seasons = grouped[country][comp_name]
+                seasons.sort(key=lambda x: x.get("season_name", ""), reverse=True)
+                
+                print(f"   📋 {comp_name}")
+                for s in seasons:
+                    print(f"      competition_id={s['competition_id']}, "
+                          f"season_id={s['season_id']}, "
+                          f"season={s.get('season_name', '?')}")
+        
+        print("\n" + "=" * 70)
+        print("Use these IDs in fetch_scenario() or run_full_analysis_statsbomb()")
+        print("=" * 70)
+        
+        return comps
+
+    # =========================================================================
+    # CONVENIENCE: FETCH SCENARIO
+    # =========================================================================
+    
+    def fetch_scenario(
+        self,
+        competition_id: int,
+        season_id: int,
+        team_name: str,
+        max_matches: int = 50
+    ) -> Dict:
+        """
+        Fetch all data for an MTFI analysis scenario using StatsBomb data.
+        
+        This mirrors SportsmonksClient.fetch_scenario() but uses StatsBomb APIs.
+        It fetches team match stats, player season stats, lineups, and match data
+        to build a complete picture of a team's tactical profile and squad.
+        
+        Args:
+            competition_id: StatsBomb competition ID (e.g., 2 for Premier League)
+            season_id: StatsBomb season ID (e.g., 282 for 2024/25)
+            team_name: Team name to analyse (e.g., "Tottenham")
+            max_matches: Maximum matches to fetch detailed stats for
+            
+        Returns:
+            Dictionary with matches, team_info, team_match_stats,
+            player_season_stats, lineups, manager_info
+        """
+        print("\n" + "=" * 50)
+        print("AEGIS DATA FETCH (StatsBomb)")
+        print("=" * 50)
+        
+        # 1. Get matches for team
+        print(f"\n[1/5] Finding matches for: {team_name}")
+        matches, team_info = self.get_matches_for_team(
+            competition_id, season_id, team_name
+        )
+        if not matches:
+            # Give a helpful error - if matches were returned but team not found,
+            # the diagnostic was already printed by get_matches_for_team
+            raise ValueError(
+                f"No matches found for '{team_name}' in competition {competition_id}, "
+                f"season {season_id}.\n"
+                f"Run sb.diagnose() to see your available competitions and correct IDs.\n"
+                f"Or try: sb.get_matches({competition_id}, {season_id}) to inspect raw match data."
+            )
+        
+        # Filter to available matches only
+        available = [m for m in matches if m.get("match_status") == "available"]
+        if not available:
+            available = matches  # fall back to all
+        available = available[:max_matches]
+        
+        print(f"      ✓ {team_info.get('name', team_name)}: {len(available)} matches")
+        
+        # 2. Extract manager info from matches
+        print(f"\n[2/5] Extracting manager info")
+        manager_info = self._extract_manager_from_matches(available, team_info)
+        print(f"      ✓ Manager: {manager_info.get('name', 'Unknown')}")
+        
+        # 3. Fetch team match stats for all matches
+        print(f"\n[3/5] Fetching team match stats ({len(available)} matches)")
+        team_match_stats = []
+        for i, match in enumerate(available):
+            mid = match.get("match_id")
+            try:
+                stats = self.get_team_match_stats(mid)
+                if stats:
+                    team_match_stats.extend(stats)
+                if (i + 1) % 10 == 0:
+                    print(f"      ... {i + 1}/{len(available)}")
+            except Exception as e:
+                print(f"      ⚠ Match {mid}: {e}")
+        print(f"      ✓ {len(team_match_stats)} team-match stat records")
+        
+        # 4. Fetch player season stats
+        print(f"\n[4/5] Fetching player season stats")
+        player_season_stats = self.get_player_season_stats(competition_id, season_id)
+        print(f"      ✓ {len(player_season_stats)} players in season")
+        
+        # 5. Fetch lineups for formation analysis (sample of matches)
+        print(f"\n[5/5] Fetching lineups for formation analysis")
+        lineups = []
+        sample = available[:min(20, len(available))]
+        for match in sample:
+            mid = match.get("match_id")
+            try:
+                lineup_data = self.get_lineups(mid)
+                lineups.append({"match_id": mid, "lineups": lineup_data})
+            except Exception:
+                pass
+        print(f"      ✓ {len(lineups)} match lineups")
+        
+        # Save to files
+        self._save_scenario_data(
+            matches=available,
+            team_info=team_info,
+            team_match_stats=team_match_stats,
+            player_season_stats=player_season_stats,
+            lineups=lineups,
+            manager_info=manager_info,
+            competition_id=competition_id,
+            season_id=season_id
+        )
+        
+        print("\n" + "=" * 50)
+        print("✓ DATA FETCH COMPLETE (StatsBomb)")
+        print("=" * 50)
+        
+        return {
+            "matches": available,
+            "team_info": team_info,
+            "team_match_stats": team_match_stats,
+            "player_season_stats": player_season_stats,
+            "lineups": lineups,
+            "manager_info": manager_info,
+            "competition_id": competition_id,
+            "season_id": season_id,
+        }
+    
+    def _extract_manager_from_matches(
+        self,
+        matches: List[Dict],
+        team_info: Dict
+    ) -> Dict:
+        """Extract manager info from match data."""
+        team_id = team_info.get("id")
+        team_name = team_info.get("name", "")
+        
+        for match in matches:
+            home = match.get("home_team", {})
+            away = match.get("away_team", {})
+            
+            home_id = home.get("home_team_id") or home.get("id") or home.get("team_id")
+            away_id = away.get("away_team_id") or away.get("id") or away.get("team_id")
+            
+            # Also match by name as fallback
+            home_name = home.get("home_team_name") or home.get("name") or ""
+            away_name = away.get("away_team_name") or away.get("name") or ""
+            
+            is_home = (home_id == team_id) or (team_name and team_name.lower() in home_name.lower())
+            is_away = (away_id == team_id) or (team_name and team_name.lower() in away_name.lower())
+            
+            manager_data = None
+            if is_home:
+                # Manager lives INSIDE the team object at .managers (not top-level)
+                manager_data = (
+                    home.get("managers") or 
+                    match.get("home_team_manager") or
+                    match.get("home_managers")
+                )
+            elif is_away:
+                manager_data = (
+                    away.get("managers") or
+                    match.get("away_team_manager") or
+                    match.get("away_managers")
+                )
+            
+            if manager_data:
+                if isinstance(manager_data, list):
+                    mgr = manager_data[0] if manager_data else None
+                elif isinstance(manager_data, dict):
+                    mgr = manager_data
+                else:
+                    mgr = None
+                
+                if mgr:
+                    country = mgr.get("country", {})
+                    country_name = country.get("name", "Unknown") if isinstance(country, dict) else str(country)
+                    return {
+                        "id": mgr.get("id"),
+                        "name": mgr.get("name") or mgr.get("nickname") or "Unknown",
+                        "nickname": mgr.get("nickname"),
+                        "dob": mgr.get("dob"),
+                        "country": country_name
+                    }
+        
+        return {"name": "Unknown", "id": None}
+    
+    def _save_scenario_data(
+        self,
+        matches,
+        team_info,
+        team_match_stats,
+        player_season_stats,
+        lineups,
+        manager_info,
+        competition_id,
+        season_id
+    ):
+        """Save fetched StatsBomb data to files."""
+        Config.DATA_DIR.mkdir(parents=True, exist_ok=True)
+        
+        with open(Config.DATA_DIR / "sb_matches.json", "w") as f:
+            json.dump(matches, f, indent=2)
+        
+        with open(Config.DATA_DIR / "sb_team_info.json", "w") as f:
+            json.dump(team_info, f, indent=2)
+        
+        with open(Config.DATA_DIR / "sb_team_match_stats.json", "w") as f:
+            json.dump(team_match_stats, f, indent=2)
+        
+        with open(Config.DATA_DIR / "sb_player_season_stats.json", "w") as f:
+            json.dump(player_season_stats, f, indent=2)
+        
+        with open(Config.DATA_DIR / "sb_lineups.json", "w") as f:
+            json.dump(lineups, f, indent=2)
+        
+        with open(Config.DATA_DIR / "sb_manager_info.json", "w") as f:
+            json.dump(manager_info, f, indent=2)
+        
+        metadata = {
+            "data_source": "statsbomb",
+            "fetch_type": "statsbomb_full",
+            "competition_id": competition_id,
+            "season_id": season_id,
             "timestamp": datetime.now().isoformat()
         }
         with open(Config.DATA_DIR / "metadata.json", "w") as f:
