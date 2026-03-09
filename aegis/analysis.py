@@ -136,6 +136,87 @@ DNA_PILLARS = {
     },
 }
 
+
+
+# ─────────────────────────────────────────────────────────────────────
+# PILLAR → PLAYER DEMAND TRANSLATION MATRIX
+# ─────────────────────────────────────────────────────────────────────
+# Maps each of Gary's 8 pillars to the player features it demands,
+# broken down by position group. Values are demand strengths (0.0–1.0).
+#
+# Read as: "If a manager scores HIGH on this pillar, how important
+# is each player feature for each position?"
+#
+# The manager's actual pillar score (0-100) scales these demands,
+# producing unique weight profiles for every manager × position.
+
+PILLAR_PLAYER_DEMANDS = {
+    # ── Pillar 1: Shape & Occupation ──
+    # High = structured, disciplined positional play
+    "shape_occupation": {
+        "GK":  {"pass_accuracy": 0.5},
+        "DEF": {"interceptions_per90": 0.5, "pass_accuracy": 0.6, "tackles_per90": 0.3},
+        "MID": {"pass_accuracy": 0.7, "key_passes_per90": 0.4, "interceptions_per90": 0.3},
+        "ATT": {"shots_per90": 0.3, "goals_per90": 0.3},
+    },
+    # ── Pillar 2: Build-up (patience) ──
+    # High = patient possession build from back
+    "build_up": {
+        "GK":  {"pass_accuracy": 0.8},
+        "DEF": {"pass_accuracy": 0.8, "dribbles_per90": 0.4, "key_passes_per90": 0.3},
+        "MID": {"pass_accuracy": 0.7, "key_passes_per90": 0.6, "dribbles_per90": 0.4},
+        "ATT": {"assists_per90": 0.4, "key_passes_per90": 0.5, "pass_accuracy": 0.3},
+    },
+    # ── Pillar 3: Chance Creation ──
+    # High = creates high-quality chances (xG per shot)
+    "chance_creation": {
+        "GK":  {},
+        "DEF": {"key_passes_per90": 0.3, "assists_per90": 0.3},
+        "MID": {"key_passes_per90": 0.8, "assists_per90": 0.6, "dribbles_per90": 0.4, "shots_per90": 0.3},
+        "ATT": {"goals_per90": 0.7, "shots_per90": 0.8, "key_passes_per90": 0.3, "dribbles_per90": 0.4},
+    },
+    # ── Pillar 4: Press & Counterpress ──
+    # High = intense pressing, aggressive counterpressing
+    "press_counterpress": {
+        "GK":  {"interceptions_per90": 0.3},
+        "DEF": {"tackles_per90": 0.7, "interceptions_per90": 0.7},
+        "MID": {"tackles_per90": 0.8, "interceptions_per90": 0.6},
+        "ATT": {"tackles_per90": 0.5, "interceptions_per90": 0.3},
+    },
+    # ── Pillar 5: Block & Line Height ──
+    # High = high line with proactive defending
+    "block_line_height": {
+        "GK":  {"pass_accuracy": 0.3},
+        "DEF": {"tackles_per90": 0.6, "interceptions_per90": 0.7, "pass_accuracy": 0.3},
+        "MID": {"tackles_per90": 0.5, "interceptions_per90": 0.5},
+        "ATT": {"tackles_per90": 0.2},
+    },
+    # ── Pillar 6: Transitions ──
+    # High = dangerous in transition / counter-attacking
+    "transitions": {
+        "GK":  {"pass_accuracy": 0.3},
+        "DEF": {"dribbles_per90": 0.3, "pass_accuracy": 0.4},
+        "MID": {"dribbles_per90": 0.5, "key_passes_per90": 0.5, "shots_per90": 0.3},
+        "ATT": {"goals_per90": 0.6, "dribbles_per90": 0.7, "shots_per90": 0.5},
+    },
+    # ── Pillar 7: Width & Overloads ──
+    # High = heavy use of width, crossing, overlaps
+    "width_overloads": {
+        "GK":  {},
+        "DEF": {"assists_per90": 0.5, "dribbles_per90": 0.5, "key_passes_per90": 0.4},
+        "MID": {"key_passes_per90": 0.5, "assists_per90": 0.4, "dribbles_per90": 0.3},
+        "ATT": {"dribbles_per90": 0.7, "assists_per90": 0.5, "key_passes_per90": 0.4},
+    },
+    # ── Pillar 8: Set Pieces ──
+    # High = relies on set pieces for xG share
+    "set_pieces": {
+        "GK":  {},
+        "DEF": {"goals_per90": 0.6},
+        "MID": {"assists_per90": 0.5, "key_passes_per90": 0.5},
+        "ATT": {"goals_per90": 0.6, "shots_per90": 0.4},
+    },
+}
+
 # Archetype weights for player fit scoring (unchanged — works with both feature sets)
 # The archetype names are assigned by _name_clusters() based on feature z-scores
 
@@ -1484,6 +1565,8 @@ class SquadFitAnalyzer:
         self.squad_fit = []
         self.ideal_xi = []
         self.squad_stats = []
+        self.manager_pillar_scores = None  # 8-pillar scores from DNA
+        self.league_percentiles = None     # Percentile distributions by position
     
     def load_model(self, verbose: bool = True) -> "SquadFitAnalyzer":
         """Load trained Manager DNA model."""
@@ -1552,6 +1635,9 @@ class SquadFitAnalyzer:
         
         self.target_manager = manager_dna.get("manager", "Unknown")
         self.target_club = manager_dna.get("team", "Unknown")
+        
+        # Store pillar scores for dynamic weight computation
+        self.manager_pillar_scores = manager_dna.get("pillar_scores", None)
         
         tp = manager_dna.get("tactical_profile", {})
         rp = manager_dna.get("results_profile", {})
@@ -1625,24 +1711,49 @@ class SquadFitAnalyzer:
         self,
         squad_profiles: list,
         club_name: str = None,
+        league_player_stats: list = None,
         verbose: bool = True
     ) -> "SquadFitAnalyzer":
         """
-        Calculate fit scores from pre-processed squad profiles.
+        Calculate fit scores using pillar-driven, position-specific, percentile-based scoring.
         
-        Works with profiles from either ETLPipeline or StatsBombETL,
-        bypassing the raw Sportsmonks data extraction.
+        New scoring engine (v2):
+        1. Manager's 8-pillar DNA scores -> position-specific weight profiles
+        2. All league players -> percentile distributions by position group
+        3. Each player's fit = weighted average of their percentile ranks
+        
+        Falls back to legacy archetype scoring if pillar scores or league data
+        are not available (Sportsmonks compatibility).
+        
+        Args:
+            squad_profiles: Player profile dicts (from ETL)
+            club_name: Club name override
+            league_player_stats: Full league player_season_stats for percentile computation.
+            verbose: Print progress
         """
         if self.target_cluster is None and self.target_cluster_name is None:
-            raise ValueError("No target manager set. Run set_target_manager() or set_target_manager_from_dna() first.")
+            raise ValueError("No target manager set.")
         
         if club_name:
             self.target_club = club_name
         
+        # Decide scoring mode
+        use_pillar_scoring = (
+            self.manager_pillar_scores is not None and 
+            league_player_stats is not None and
+            len(league_player_stats) > 20
+        )
+        
         if verbose:
             print("\n" + "=" * 60)
-            print("CALCULATING FIT SCORES (from profiles)")
+            if use_pillar_scoring:
+                print("CALCULATING FIT SCORES (8-Pillar Percentile Engine)")
+            else:
+                print("CALCULATING FIT SCORES (Legacy Archetype Mode)")
             print("=" * 60)
+        
+        if use_pillar_scoring:
+            self._build_league_percentiles(league_player_stats, verbose)
         
         self.squad_fit = []
         
@@ -1666,25 +1777,12 @@ class SquadFitAnalyzer:
             
             position = profile.get("position", "Unknown")
             detailed_position = profile.get("detailed_position", position)
-            check = (detailed_position or position or "").lower()
+            position_group = self._get_position_group_from_name(position, detailed_position)
             
-            if "goal" in check:
-                position_group = "GK"
-            elif any(kw in check for kw in ["back", "defender", "centre-back", "center-back"]):
-                position_group = "DEF"
-            elif any(kw in check for kw in ["winger", "forward", "striker", "attacker", "centre-forward"]):
-                position_group = "ATT"
-            elif "attacking" in check and "midfield" in check:
-                position_group = "ATT"
-            elif "wing" in check and "back" not in check:
-                position_group = "ATT"
+            if use_pillar_scoring:
+                fit_score = self._calculate_pillar_fit(features, position_group)
             else:
-                position_group = "MID"
-            
-            fit_score = self._calculate_weighted_fit(
-                player_stats=features,
-                position_group=position_group
-            )
+                fit_score = self._calculate_weighted_fit(features, position_group)
             
             classification = self._classify_score(fit_score)
             
@@ -1714,11 +1812,161 @@ class SquadFitAnalyzer:
             
             avg_fit = sum(p.fit_score for p in self.squad_fit) / len(self.squad_fit)
             print(f"\n  Average Fit Score: {avg_fit:.1f}")
+            
+            if use_pillar_scoring:
+                print(f"  Scoring: 8-Pillar Percentile Engine (league={len(league_player_stats)} players)")
+            else:
+                print(f"  Scoring: Legacy archetype ({self.target_cluster_name})")
         
         self._generate_ideal_xi(verbose)
-        
         return self
     
+    # =========================================================================
+    # NEW SCORING ENGINE: Pillar-Driven Percentile Scoring
+    # =========================================================================
+    
+    def _build_league_percentiles(self, league_player_stats: list, verbose: bool = True):
+        """Pre-compute percentile distributions from all league players by position group."""
+        from collections import defaultdict
+        from .etl import StatsBombETL
+        
+        if verbose:
+            print(f"\n  Building league percentiles from {len(league_player_stats)} players...")
+        
+        position_features = defaultdict(lambda: defaultdict(list))
+        
+        for p in league_player_stats:
+            minutes = p.get("player_season_minutes", 0) or 0
+            if minutes < 270:
+                continue
+            
+            primary_pos = p.get("primary_position")
+            pos = StatsBombETL.POSITION_MAP.get(primary_pos, None)
+            if not pos or pos == "Unknown":
+                save_ratio = p.get("player_season_save_ratio", 0) or 0
+                goals_faced = p.get("player_season_goals_faced_90", 0) or 0
+                tackles_90 = p.get("player_season_tackles_90", 0) or 0
+                interceptions_90 = p.get("player_season_interceptions_90", 0) or 0
+                clearance_90 = p.get("player_season_clearance_90", 0) or 0
+                goals_90 = p.get("player_season_goals_90", 0) or 0
+                np_xg_90 = p.get("player_season_np_xg_90", 0) or 0
+                
+                if save_ratio > 0 or goals_faced > 0:
+                    pos = "Goalkeeper"
+                elif (tackles_90 + interceptions_90 + clearance_90) > 4.0 and goals_90 < 0.15:
+                    pos = "Defender"
+                elif goals_90 > 0.25 or np_xg_90 > 0.25:
+                    pos = "Attacker"
+                else:
+                    pos = "Midfielder"
+            
+            pos_lower = pos.lower()
+            if "goal" in pos_lower: group = "GK"
+            elif any(k in pos_lower for k in ["back", "defender"]): group = "DEF"
+            elif any(k in pos_lower for k in ["winger", "forward", "striker", "attacker"]): group = "ATT"
+            else: group = "MID"
+            
+            features = {
+                "goals_per90": float(p.get("player_season_goals_90", 0) or 0),
+                "assists_per90": float(p.get("player_season_assists_90", 0) or 0),
+                "tackles_per90": float(p.get("player_season_tackles_90", 0) or 0),
+                "interceptions_per90": float(p.get("player_season_interceptions_90", 0) or 0),
+                "pass_accuracy": float(p.get("player_season_passing_ratio", 0) or 0),
+                "key_passes_per90": float(p.get("player_season_key_passes_90", 0) or 0),
+                "dribbles_per90": float(p.get("player_season_dribbles_90", 0) or 0),
+                "shots_per90": float(p.get("player_season_np_shots_90", 0) or 0),
+            }
+            
+            for feat, val in features.items():
+                position_features[group][feat].append(val)
+        
+        self.league_percentiles = {}
+        for group in ["GK", "DEF", "MID", "ATT"]:
+            self.league_percentiles[group] = {}
+            for feat in PLAYER_FIT_FEATURES:
+                vals = sorted(position_features[group].get(feat, [0]))
+                self.league_percentiles[group][feat] = vals
+        
+        if verbose:
+            for group in ["GK", "DEF", "MID", "ATT"]:
+                n = len(position_features[group].get("pass_accuracy", []))
+                print(f"    {group}: {n} players")
+    
+    def _get_percentile(self, value: float, position_group: str, feature: str) -> float:
+        """Get percentile rank (0-100) of a value within its position group."""
+        import bisect
+        if not self.league_percentiles:
+            return 50.0
+        sorted_vals = self.league_percentiles.get(position_group, {}).get(feature, [])
+        if not sorted_vals:
+            return 50.0
+        rank = bisect.bisect_left(sorted_vals, value)
+        return round(rank / len(sorted_vals) * 100, 1)
+    
+    def _compute_dynamic_weights(self, position_group: str) -> Dict[str, float]:
+        """
+        Compute position-specific feature weights from manager's 8-pillar DNA.
+        
+        Each pillar's demand matrix is scaled by the manager's actual score
+        on that pillar (0-100 -> 0-1). Base weight of 0.5 ensures all features
+        contribute, preventing any feature from being zeroed out.
+        """
+        weights = {f: 0.5 for f in PLAYER_FIT_FEATURES}
+        
+        if not self.manager_pillar_scores:
+            return weights
+        
+        for pillar_key, demands_by_pos in PILLAR_PLAYER_DEMANDS.items():
+            pillar_score = self.manager_pillar_scores.get(pillar_key, 50) / 100.0
+            demands = demands_by_pos.get(position_group, {})
+            for feature, demand_strength in demands.items():
+                if feature in weights:
+                    weights[feature] += pillar_score * demand_strength
+        
+        return weights
+    
+    def _calculate_pillar_fit(self, player_stats: Dict, position_group: str) -> float:
+        """
+        Calculate fit score using pillar-driven weights and league percentiles.
+        
+        Score = weighted average of percentile ranks, producing a 0-100 score
+        unique to this specific manager x position combination.
+        """
+        weights = self._compute_dynamic_weights(position_group)
+        
+        total_weighted_pct = 0
+        total_weight = 0
+        
+        for feature in PLAYER_FIT_FEATURES:
+            value = player_stats.get(feature, 0)
+            weight = weights.get(feature, 0.5)
+            percentile = self._get_percentile(value, position_group, feature)
+            
+            total_weighted_pct += percentile * weight
+            total_weight += weight
+        
+        raw_score = total_weighted_pct / total_weight if total_weight > 0 else 50.0
+        
+        # Spread adjustment to avoid scores bunching around 45-55
+        if raw_score >= 65:
+            adjusted = 65 + (raw_score - 65) * 1.3
+        elif raw_score <= 35:
+            adjusted = 35 - (35 - raw_score) * 1.3
+        else:
+            adjusted = raw_score
+        
+        return max(0, min(100, adjusted))
+    
+    def _get_position_group_from_name(self, position: str, detailed_position: str = "") -> str:
+        """Map position name string to group (GK/DEF/MID/ATT)."""
+        check = (detailed_position or position or "").lower()
+        if "goal" in check: return "GK"
+        if any(kw in check for kw in ["back", "defender", "centre-back", "center-back"]): return "DEF"
+        if any(kw in check for kw in ["winger", "forward", "striker", "attacker", "centre-forward"]): return "ATT"
+        if "attacking" in check and "midfield" in check: return "ATT"
+        if "wing" in check and "back" not in check: return "ATT"
+        return "MID"
+
     def fetch_squad(self, club_name: str, verbose: bool = True) -> "SquadFitAnalyzer":
         """Fetch target club's squad."""
         from .client import SportsmonksClient

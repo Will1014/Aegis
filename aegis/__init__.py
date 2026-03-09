@@ -51,6 +51,7 @@ from .analysis import (
     MANAGER_DNA_FEATURES,
     STATSBOMB_DNA_FEATURES,
     DNA_PILLARS,
+    PILLAR_PLAYER_DEMANDS,
     PLAYER_FIT_FEATURES,
     FIT_THRESHOLDS,
     DEFAULT_MANAGERS,
@@ -608,7 +609,11 @@ def run_full_analysis_statsbomb(
     if coach_name:
         manager_dna["manager"] = coach_name
     analyzer.set_target_manager_from_dna(manager_dna)
-    analyzer.calculate_fit_scores_from_profiles(squad_profiles, club_name=team_name)
+    analyzer.calculate_fit_scores_from_profiles(
+        squad_profiles, 
+        club_name=team_name,
+        league_player_stats=scenario.get("player_season_stats")
+    )
     analyzer.save()
     
     # ── Step 4b: Generate recruitment priorities + legacy JSON for visualiser ──
