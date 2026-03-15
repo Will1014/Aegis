@@ -1594,7 +1594,13 @@ class SquadFitAnalyzer:
         return self
     
     def set_target_manager(self, manager_name: str, verbose: bool = True) -> "SquadFitAnalyzer":
-        """Set the target manager for analysis."""
+        """
+        Set the target manager by looking them up in the trained model.
+        
+        Uses the manager's ACTUAL tactical features from training to compute
+        pillar scores. This is the correct method for hypothetical scenarios
+        ("what if Arteta managed Chelsea?").
+        """
         mask = self.df_managers["coach_name"].str.contains(manager_name, case=False, na=False)
         matches = self.df_managers[mask]
         
@@ -1609,10 +1615,38 @@ class SquadFitAnalyzer:
         self.target_cluster = int(manager["cluster"])
         self.target_cluster_name = self.model["cluster_names"][self.target_cluster]
         
-        if verbose:
-            print(f"\nâœ“ Target Manager: {self.target_manager}")
-            print(f"  Tactical Archetype: {self.target_cluster_name}")
+        # Compute pillar scores from the manager's actual training features
+        # These reflect their real tactical profile (e.g., Arteta from Arsenal data)
+        if all(f in manager.index for f in STATSBOMB_DNA_FEATURES):
+            self.manager_pillar_scores = {
+                "shape_occupation": min(100, round(
+                    float(manager.get("defensive_line_height", 40)) * 1.5 + 
+                    float(manager.get("defensive_solidity", 50)) * 0.3, 0)),
+                "build_up": min(100, round(float(manager.get("build_up_patience", 50)), 0)),
+                "chance_creation": min(100, round(float(manager.get("chance_quality", 0.1)) * 500, 0)),
+                "press_counterpress": min(100, round(float(manager.get("pressing_intensity", 15)) * 4, 0)),
+                "block_line_height": min(100, round(
+                    float(manager.get("defensive_line_height", 40)) * 1.5 + 
+                    float(manager.get("defensive_solidity", 50)) * 0.5, 0)),
+                "transitions": min(100, round(float(manager.get("transition_threat", 1)) * 25, 0)),
+                "width_overloads": min(100, round(float(manager.get("width_usage", 5)) * 10, 0)),
+                "set_pieces": min(100, round(float(manager.get("set_piece_emphasis", 20)) * 2, 0)),
+            }
             
+            if verbose:
+                print(f"\nTarget Manager: {self.target_manager}")
+                print(f"  Team: {manager.get('team_name', '?')}")
+                print(f"  Tactical Archetype: {self.target_cluster_name}")
+                print(f"  Pillar scores (from training data):")
+                for k, v in self.manager_pillar_scores.items():
+                    print(f"    {k}: {v}")
+        else:
+            self.manager_pillar_scores = None
+            if verbose:
+                print(f"\nTarget Manager: {self.target_manager}")
+                print(f"  Tactical Archetype: {self.target_cluster_name}")
+        
+        if verbose:
             same_cluster = self.df_managers[self.df_managers["cluster"] == self.target_cluster]
             others = [n for n in same_cluster["coach_name"].tolist() if n != self.target_manager]
             if others:

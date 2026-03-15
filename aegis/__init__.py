@@ -507,7 +507,8 @@ def run_full_analysis_statsbomb(
     train_model: bool = True,
     training_competition_ids: list = None,
     visualize: bool = True,
-    max_matches: int = 50
+    max_matches: int = 50,
+    output_file: str = None
 ) -> dict:
     """
     Run full MTFI analysis using StatsBomb data.
@@ -605,10 +606,17 @@ def run_full_analysis_statsbomb(
     # Use explicit coach_name if provided, otherwise from match data
     manager_name = coach_name or scenario["manager_info"].get("name", "Unknown")
     
-    # Inject the coach name into the DNA so downstream consumers have it
-    if coach_name:
-        manager_dna["manager"] = coach_name
-    analyzer.set_target_manager_from_dna(manager_dna)
+    # Look up the manager in the TRAINING DATA to get their actual tactical profile.
+    # This is critical for hypothetical scenarios — "what if Arteta managed Chelsea?"
+    # uses Arteta's profile from Arsenal, not Chelsea's current profile.
+    try:
+        analyzer.set_target_manager(manager_name)
+    except ValueError:
+        # Manager not in training data — fall back to ETL DNA (target team's profile)
+        print(f"  ⚠ '{manager_name}' not in training data, using target team's profile")
+        if coach_name:
+            manager_dna["manager"] = coach_name
+        analyzer.set_target_manager_from_dna(manager_dna)
     analyzer.calculate_fit_scores_from_profiles(
         squad_profiles, 
         club_name=team_name,
@@ -650,40 +658,45 @@ def run_full_analysis_statsbomb(
             writer.writerows(recruitment)
     
     # Build DNA dimensions for radar chart (Gary's 8 pillars)
-    tp = manager_dna.get("tactical_profile", {})
-    rp = manager_dna.get("results_profile", {})
-    sb = manager_dna.get("statsbomb_enhanced", {})
-    
-    ppda = sb.get("ppda", tp.get("pressing", {}).get("ppda", 10))
-    possession = tp.get("possession", {}).get("avg", 50)
-    pass_acc = tp.get("build_up", {}).get("pass_accuracy", 80)
-    
-    dna_dimensions = {
-        # Pillar 1: Shape & Occupation (possession + defensive structure)
-        "Shape & Occupation": min(100, round(possession * 1.2 + rp.get("clean_sheet_pct", 30) * 0.3, 0)),
-        # Pillar 2: Build-up vs Direct (pass accuracy + patience)
-        "Build-up": min(100, round(pass_acc, 0)),
-        # Pillar 3: Chance Creation (xG quality)
-        "Chance Creation": min(100, round(sb.get("np_xg_per_game", rp.get("goals_per_game", 1.5)) * 40, 0)),
-        # Pillar 4: Press & Counterpress (PPDA inverted)
-        "Press & Counterpress": min(100, round(max(0, 30 - ppda) * 4, 0)),
-        # Pillar 5: Block & Line Height (defensive distance + solidity)
-        "Block & Line Height": min(100, round(
-            tp.get("pressing", {}).get("defensive_distance", 40) * 1.5 + 
-            max(0, 2.0 - rp.get("conceded_per_game", 1.2)) * 20, 0)),
-        # Pillar 6: Transitions (counter-attacking threat)
-        "Transitions": min(100, round(
-            sb.get("counter_attacking_shots_pg", 
-                   tp.get("attacking", {}).get("counter_attacking_shots_pg", 1)) * 25 +
-            sb.get("high_press_shots_pg", 0) * 20, 0)),
-        # Pillar 7: Width & Overloads
-        "Width & Overloads": min(100, round(sb.get("width_usage", 5) * 10, 0)),
-        # Pillar 8: Set Pieces
-        "Set Pieces": min(100, round(sb.get("set_piece_emphasis", 20) * 2, 0)),
-    }
+    # Use the manager's pillar scores from training data when available
+    # (correct for hypothetical scenarios), fall back to ETL DNA
+    if analyzer.manager_pillar_scores:
+        ps = analyzer.manager_pillar_scores
+        dna_dimensions = {
+            "Shape & Occupation": ps.get("shape_occupation", 50),
+            "Build-up": ps.get("build_up", 50),
+            "Chance Creation": ps.get("chance_creation", 50),
+            "Press & Counterpress": ps.get("press_counterpress", 50),
+            "Block & Line Height": ps.get("block_line_height", 50),
+            "Transitions": ps.get("transitions", 50),
+            "Width & Overloads": ps.get("width_overloads", 50),
+            "Set Pieces": ps.get("set_pieces", 50),
+        }
+    else:
+        tp = manager_dna.get("tactical_profile", {})
+        rp = manager_dna.get("results_profile", {})
+        sb = manager_dna.get("statsbomb_enhanced", {})
+        
+        ppda = sb.get("ppda", tp.get("pressing", {}).get("ppda", 10))
+        possession = tp.get("possession", {}).get("avg", 50)
+        pass_acc = tp.get("build_up", {}).get("pass_accuracy", 80)
+        
+        dna_dimensions = {
+            "Shape & Occupation": min(100, round(possession * 1.2 + rp.get("clean_sheet_pct", 30) * 0.3, 0)),
+            "Build-up": min(100, round(pass_acc, 0)),
+            "Chance Creation": min(100, round(sb.get("np_xg_per_game", rp.get("goals_per_game", 1.5)) * 40, 0)),
+            "Press & Counterpress": min(100, round(max(0, 30 - ppda) * 4, 0)),
+            "Block & Line Height": min(100, round(
+                tp.get("pressing", {}).get("defensive_distance", 40) * 1.5 + 
+                max(0, 2.0 - rp.get("conceded_per_game", 1.2)) * 20, 0)),
+            "Transitions": min(100, round(
+                sb.get("counter_attacking_shots_pg", 1) * 25 + sb.get("high_press_shots_pg", 0) * 20, 0)),
+            "Width & Overloads": min(100, round(sb.get("width_usage", 5) * 10, 0)),
+            "Set Pieces": min(100, round(sb.get("set_piece_emphasis", 20) * 2, 0)),
+        }
     
     legacy_results = {
-        "manager": manager_name,
+        "manager": analyzer.target_manager or manager_name,
         "matches_analysed": manager_dna.get("matches_analysed", 0),
         "primary_formation": manager_dna.get("formation_profile", {}).get("primary", "4-3-3"),
         "dna_dimensions": dna_dimensions,
@@ -709,7 +722,18 @@ def run_full_analysis_statsbomb(
         print("=" * 60)
         try:
             viz = AegisVisualizer()
-            viz.generate_dashboard()
+            viz.load_results()
+            
+            # Build output filename: user override, or auto from coach + club
+            if output_file:
+                dashboard_filename = output_file
+            else:
+                safe_coach = (analyzer.target_manager or manager_name or "Unknown").replace(" ", "_").replace(".", "")
+                safe_club = team_name.replace(" ", "_").replace("&", "and")
+                dashboard_filename = f"{safe_coach}___{safe_club}.html"
+            
+            viz.generate_dashboard(filename=dashboard_filename)
+            print(f"\n  ✓ Dashboard: {Config.OUTPUT_DIR / dashboard_filename}")
         except Exception as e:
             print(f"⚠ Dashboard generation: {e}")
     
@@ -723,7 +747,7 @@ def run_full_analysis_statsbomb(
         )
     
     results = {
-        "manager": manager_name,
+        "manager": analyzer.target_manager or manager_name,
         "club": team_name,
         "data_source": "statsbomb",
         "archetype": analyzer.target_cluster_name or "Unknown",

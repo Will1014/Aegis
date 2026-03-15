@@ -173,6 +173,13 @@ class AegisVisualizer:
         print(f"  Manager: {manager_name}")
         print(f"  Club: {target_club}")
         
+        # Extract 8-pillar DNA dimensions from summary JSON
+        dna_dimensions = summary.get("dna_dimensions", {})
+        if dna_dimensions:
+            print(f"  ✓ Loaded 8-pillar DNA dimensions ({len(dna_dimensions)} pillars)")
+        else:
+            print(f"  ⚠ No dna_dimensions in summary JSON — radar will use defaults")
+        
         # Generate HTML
         print("\n[3/3] Generating HTML...")
         
@@ -185,7 +192,8 @@ class AegisVisualizer:
             positional_gaps=positional_gaps,
             manager_name=manager_name,
             target_club=target_club,
-            season=season
+            season=season,
+            dna_dimensions=dna_dimensions
         )
         
         # Save
@@ -242,7 +250,8 @@ class AegisVisualizer:
         positional_gaps: List[Dict],
         manager_name: str,
         target_club: str,
-        season: str
+        season: str,
+        dna_dimensions: Optional[Dict] = None
     ) -> str:
         """Generate the MTFI Dashboard v2 HTML."""
         from datetime import datetime
@@ -368,17 +377,51 @@ class AegisVisualizer:
             "clusterName": target_manager_data.get("cluster_name", "Unknown") if target_manager_data else "Unknown",
             "goalsScored": self._safe_float(target_manager_data.get("goals_scored", 1.5)) if target_manager_data else 1.5,
             "goalsConceded": self._safe_float(target_manager_data.get("goals_conceded", 1.5)) if target_manager_data else 1.5,
-            "cleanSheetPct": self._safe_float(target_manager_data.get("clean_sheet_pct", 25)) if target_manager_data else 25,
-            "winRate": self._safe_float(target_manager_data.get("win_rate", 33)) if target_manager_data else 33,
-            "possession": self._safe_float(target_manager_data.get("possession", 50)) if target_manager_data else 50,
-            "passAccuracy": self._safe_float(target_manager_data.get("pass_accuracy", 80)) if target_manager_data else 80,
-            "shots": self._safe_float(target_manager_data.get("shots", 12)) if target_manager_data else 12,
-            "tackles": self._safe_float(target_manager_data.get("tackles", 15)) if target_manager_data else 15,
-            "interceptions": self._safe_float(target_manager_data.get("interceptions", 10)) if target_manager_data else 10
+            "cleanSheetPct": self._safe_float(target_manager_data.get("_clean_sheet_pct") or target_manager_data.get("clean_sheet_pct", 25)) if target_manager_data else 25,
+            "winRate": self._safe_float(target_manager_data.get("_win_rate") or target_manager_data.get("win_rate", 33)) if target_manager_data else 33,
+            "possession": self._safe_float(target_manager_data.get("_possession") or target_manager_data.get("possession", 50)) if target_manager_data else 50,
+            "passAccuracy": self._safe_float(target_manager_data.get("_pass_accuracy") or target_manager_data.get("pass_accuracy", 80)) if target_manager_data else 80,
+            "shots": self._safe_float(target_manager_data.get("_np_shots_pg") or target_manager_data.get("shots", 12)) if target_manager_data else 12,
+            "tackles": self._safe_float(target_manager_data.get("_pressures_pg") or target_manager_data.get("tackles", 15)) if target_manager_data else 15,
+            "interceptions": self._safe_float(target_manager_data.get("_deep_completions_pg") or target_manager_data.get("interceptions", 10)) if target_manager_data else 10
         }
+        
+        # Build 8-pillar DNA dimensions for radar chart
+        # Priority: explicit dna_dimensions param > aegis_analysis.json > defaults
+        if not dna_dimensions and target_manager_data:
+            # Derive from StatsBomb features in manager_profiles.csv
+            press = self._safe_float(target_manager_data.get("pressing_intensity", 50))
+            patience = self._safe_float(target_manager_data.get("build_up_patience", 50))
+            chance_q = self._safe_float(target_manager_data.get("chance_quality", 0.1))
+            def_height = self._safe_float(target_manager_data.get("defensive_line_height", 40))
+            width = self._safe_float(target_manager_data.get("width_usage", 5))
+            sp_emph = self._safe_float(target_manager_data.get("set_piece_emphasis", 20))
+            trans = self._safe_float(target_manager_data.get("transition_threat", 1))
+            def_solid = self._safe_float(target_manager_data.get("defensive_solidity", 50))
+            counterpress = self._safe_float(target_manager_data.get("counterpress_rate", 30))
+            possession_val = self._safe_float(target_manager_data.get("_possession", 50))
+            
+            dna_dimensions = {
+                "Shape & Occupation": min(100, round(def_height * 1.2 + possession_val * 0.3, 0)),
+                "Build-up": min(100, round(patience, 0)),
+                "Chance Creation": min(100, round(chance_q * 400, 0)),
+                "Press & Counterpress": min(100, round((press + counterpress) / 2, 0)),
+                "Block & Line Height": min(100, round(def_height + def_solid * 0.3, 0)),
+                "Transitions": min(100, round(trans * 25, 0)),
+                "Width & Overloads": min(100, round(width * 10, 0)),
+                "Set Pieces": min(100, round(sp_emph * 2, 0)),
+            }
+        
+        if not dna_dimensions:
+            dna_dimensions = {
+                "Shape & Occupation": 50, "Build-up": 50, "Chance Creation": 50,
+                "Press & Counterpress": 50, "Block & Line Height": 50,
+                "Transitions": 50, "Width & Overloads": 50, "Set Pieces": 50,
+            }
         
         # JSON encode
         manager_json = json.dumps(manager_js)
+        dna_dimensions_json = json.dumps(dna_dimensions)
         clusters_json = json.dumps(clusters_js)
         managers_json = json.dumps(managers_js)
         squad_json = json.dumps(squad_js)
@@ -389,6 +432,7 @@ class AegisVisualizer:
         # Generate the HTML (inline React dashboard)
         html = self._get_dashboard_v2_template(
             manager_json=manager_json,
+            dna_dimensions_json=dna_dimensions_json,
             clusters_json=clusters_json,
             managers_json=managers_json,
             squad_json=squad_json,
@@ -404,6 +448,7 @@ class AegisVisualizer:
     def _get_dashboard_v2_template(
         self,
         manager_json: str,
+        dna_dimensions_json: str,
         clusters_json: str,
         managers_json: str,
         squad_json: str,
@@ -433,6 +478,7 @@ const {{ useState }} = React;
 
 const MTFIDashboard = () => {{
   const managerData = {manager_json};
+  const dnaPillars = {dna_dimensions_json};
   const clusters = {clusters_json};
   const allManagers = {managers_json};
   const squadFit = {squad_json};
@@ -619,33 +665,25 @@ const MTFIDashboard = () => {{
   );
 
   const ManagerDNARadar = () => {{
-    const dimensions = [
-      {{ label: 'Possession', value: managerData.possession || 50 }},
-      {{ label: 'Passing', value: managerData.passAccuracy || 80 }},
-      {{ label: 'Attacking', value: ((managerData.goalsScored || 1.5) / 2.5) * 100 }},
-      {{ label: 'Pressing', value: (((managerData.tackles || 15) + (managerData.interceptions || 10)) / 35) * 100 }},
-      {{ label: 'Defence', value: 100 - ((managerData.goalsConceded || 1.5) / 3) * 100 }},
-      {{ label: 'Clean Sheets', value: (managerData.cleanSheetPct || 25) * 2 }},
-      {{ label: 'Win Rate', value: (managerData.winRate || 33) * 2 }},
-      {{ label: 'Shots', value: ((managerData.shots || 12) / 18) * 100 }},
-    ];
-    const n = dimensions.length;
+    const dims = Object.entries(dnaPillars);
+    const n = dims.length;
     const angleStep = (2 * Math.PI) / n;
     const centerX = 120, centerY = 120, maxRadius = 90;
-    const points = dimensions.map((d, i) => {{
+    const points = dims.map(([label, value], i) => {{
       const angle = i * angleStep - Math.PI / 2;
-      const radius = (Math.min(d.value, 100) / 100) * maxRadius;
-      return {{ x: centerX + Math.cos(angle) * radius, y: centerY + Math.sin(angle) * radius }};
+      const radius = (Math.min(value, 100) / 100) * maxRadius;
+      return {{ x: centerX + Math.cos(angle) * radius, y: centerY + Math.sin(angle) * radius, label, value }};
     }});
     const polygonPoints = points.map(p => `${{p.x}},${{p.y}}`).join(' ');
     return (
       <div className="flex flex-col items-center">
-        <svg width="240" height="240" className="overflow-visible">
+        <svg width="280" height="280" className="overflow-visible">
           {{[25, 50, 75, 100].map((level) => (<circle key={{level}} cx={{centerX}} cy={{centerY}} r={{(level / 100) * maxRadius}} fill="none" stroke="#334155" strokeWidth="1" opacity="0.5" />))}}
-          {{dimensions.map((_, i) => {{ const angle = i * angleStep - Math.PI / 2; return (<line key={{i}} x1={{centerX}} y1={{centerY}} x2={{centerX + Math.cos(angle) * maxRadius}} y2={{centerY + Math.sin(angle) * maxRadius}} stroke="#334155" strokeWidth="1" opacity="0.5" />); }})}}
+          {{dims.map((_, i) => {{ const angle = i * angleStep - Math.PI / 2; return (<line key={{i}} x1={{centerX}} y1={{centerY}} x2={{centerX + Math.cos(angle) * maxRadius}} y2={{centerY + Math.sin(angle) * maxRadius}} stroke="#334155" strokeWidth="1" opacity="0.5" />); }})}}
           <polygon points={{polygonPoints}} fill="#F59E0B" fillOpacity="0.3" stroke="#F59E0B" strokeWidth="2" />
           {{points.map((p, i) => (<circle key={{i}} cx={{p.x}} cy={{p.y}} r="4" fill="#F59E0B" stroke="#FCD34D" strokeWidth="2" />))}}
-          {{dimensions.map((d, i) => {{ const angle = i * angleStep - Math.PI / 2; const labelRadius = maxRadius + 20; const x = centerX + Math.cos(angle) * labelRadius; const y = centerY + Math.sin(angle) * labelRadius; return (<text key={{i}} x={{x}} y={{y}} textAnchor="middle" dominantBaseline="middle" className="text-xs fill-slate-400">{{d.label}}</text>); }})}}
+          {{dims.map(([label], i) => {{ const angle = i * angleStep - Math.PI / 2; const labelRadius = maxRadius + 22; const x = centerX + Math.cos(angle) * labelRadius; const y = centerY + Math.sin(angle) * labelRadius; return (<text key={{i}} x={{x}} y={{y}} textAnchor="middle" dominantBaseline="middle" className="fill-slate-400" style={{{{fontSize: '9px'}}}}>{{label}}</text>); }})}}
+          {{points.map((p, i) => (<text key={{'v'+i}} x={{p.x}} y={{p.y - 10}} textAnchor="middle" className="fill-amber-300" style={{{{fontSize: '10px', fontWeight: 'bold'}}}}>{{Math.round(p.value)}}</text>))}}
         </svg>
         <div className="mt-4 px-4 py-2 rounded-full bg-amber-500/20 border border-amber-500/50">
           <span className="text-amber-400 font-semibold">Cluster: {{managerData.clusterName}}</span>
@@ -745,7 +783,7 @@ const MTFIDashboard = () => {{
         </div>
 
         <div className="mt-8 pt-6 border-t border-slate-800 flex items-center justify-between text-sm text-slate-500">
-          <div>MTFI Prototype v0.2 • Data Source: Sportsmonks</div>
+          <div>MTFI Prototype v0.2 • Data Source: StatsBomb</div>
           <div>Generated: {generated_at}</div>
         </div>
       </div>
