@@ -157,7 +157,9 @@ def metric_card(value, label, color_class="gradient"):
 
 def classification_bar(counts):
     """Render a horizontal classification breakdown."""
-    weights = [counts.get(c, 0) or 0.1 for c in CLASSIFICATION_COLORS]
+    # Minimum weight of 3 prevents columns from collapsing so narrow
+    # that labels wrap vertically (e.g. count=1 vs count=14).
+    weights = [max(counts.get(c, 0), 3) for c in CLASSIFICATION_COLORS]
     cols = st.columns(weights)
     for i, (cls_name, color) in enumerate(CLASSIFICATION_COLORS.items()):
         n = counts.get(cls_name, 0)
@@ -440,9 +442,87 @@ for key, default in [
     ("dashboards_a", {}), ("dashboards_b", {}),
     ("analysis_a", {}), ("analysis_b", {}),
     ("squad_a", None), ("squad_b", None),
+    ("authenticated", False),
 ]:
     if key not in st.session_state:
         st.session_state[key] = default
+
+
+# ══════════════════════════════════════════════════════════════
+# CREDENTIAL HELPERS
+# ══════════════════════════════════════════════════════════════
+
+def _get_secret(key, default=""):
+    """Resolve a credential from env vars or Streamlit secrets."""
+    val = os.environ.get(key, "")
+    if not val:
+        try:
+            val = st.secrets.get(key, default)
+        except Exception:
+            val = default
+    return val
+
+
+# StatsBomb creds — read silently, never shown to clients
+sb_user = _get_secret("SB_USERNAME")
+sb_pass = _get_secret("SB_PASSWORD")
+has_creds = bool(sb_user and sb_pass)
+
+_default_base = (
+    "/content/aegis_data"
+    if Path("/content").exists() and os.access("/content", os.W_OK)
+    else str(Path.home() / "aegis_data")
+)
+base_dir = _get_secret("BASE_DIR", _default_base)
+
+
+# ══════════════════════════════════════════════════════════════
+# LOGIN SCREEN
+# ══════════════════════════════════════════════════════════════
+
+def _show_login():
+    """Render a branded login screen."""
+    st.markdown("""
+    <div style="display:flex; flex-direction:column; align-items:center;
+                justify-content:center; min-height:60vh; text-align:center;">
+        <div style="font-family:'Space Mono',monospace; font-size:3rem;
+                    font-weight:700; margin-bottom:0.5rem;
+                    background:linear-gradient(135deg,#38bdf8,#818cf8);
+                    -webkit-background-clip:text;
+                    -webkit-text-fill-color:transparent;">
+            ⚽ Aegis MTFI
+        </div>
+        <div style="color:#64748b; font-size:0.95rem; margin-bottom:2.5rem;
+                    letter-spacing:0.08em;">
+            Manager Tactical Fit Intelligence
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # Centred narrow column for the input
+    _, col, _ = st.columns([1, 1.5, 1])
+    with col:
+        code = st.text_input("Enter access code", type="password",
+                             placeholder="Access code",
+                             label_visibility="collapsed")
+        if st.button("Sign in", use_container_width=True, type="primary"):
+            app_password = _get_secret("APP_PASSWORD", "")
+            if not app_password:
+                # No password configured — allow entry (dev mode)
+                st.session_state.authenticated = True
+                st.rerun()
+            elif code == app_password:
+                st.session_state.authenticated = True
+                st.rerun()
+            else:
+                st.error("Invalid access code.")
+
+        st.caption("Contact Aegis Advisory for access.")
+
+
+if not st.session_state.authenticated:
+    _show_login()
+    st.stop()
 
 
 # ══════════════════════════════════════════════════════════════
@@ -531,25 +611,6 @@ def _get_all_managers(sb_user, sb_pass, league_ids: list, season_id: int,
 with st.sidebar:
     st.markdown("## ⚽ Aegis MTFI")
     st.caption("Manager Tactical Fit Intelligence")
-    st.divider()
-
-    # ── Credentials ──
-    with st.expander("🔑 StatsBomb Credentials",
-                     expanded=not bool(os.environ.get("SB_USERNAME"))):
-        sb_user = st.text_input("Username",
-                                value=os.environ.get("SB_USERNAME", ""))
-        sb_pass = st.text_input("Password",
-                                value=os.environ.get("SB_PASSWORD", ""),
-                                type="password")
-        _default_base = (
-            "/content/aegis_data"
-            if Path("/content").exists() and os.access("/content", os.W_OK)
-            else str(Path.home() / "aegis_data")
-        )
-        base_dir = st.text_input("Data directory", value=_default_base)
-
-    has_creds = bool(sb_user and sb_pass)
-
     st.divider()
 
     # ── Mode toggle ──
@@ -658,7 +719,7 @@ with st.sidebar:
         league_id_b = team_b = coach_b = None
 
     if not has_creds:
-        st.caption("ℹ️ Enter credentials above to load team & manager lists.")
+        st.caption("ℹ️ No data connection — check StatsBomb credentials in secrets.")
 
     st.divider()
 
@@ -669,6 +730,11 @@ with st.sidebar:
         _run_cached.clear()
         discover_teams_and_managers.clear()
         st.toast("Cache cleared — next run will fetch fresh data.")
+
+    st.divider()
+    if st.button("🚪  Sign out", use_container_width=True):
+        st.session_state.authenticated = False
+        st.rerun()
 
 
 # ══════════════════════════════════════════════════════════════
@@ -698,7 +764,8 @@ st.markdown("# Aegis MTFI Dashboard")
 
 if run_clicked:
     if not has_creds:
-        st.error("Enter your StatsBomb credentials in the sidebar.")
+        st.error("StatsBomb credentials not configured. "
+                 "Set SB_USERNAME and SB_PASSWORD in your Streamlit secrets.")
         st.stop()
     if not team_a:
         st.error("Select a team for Scenario A.")
