@@ -71,16 +71,48 @@ MANAGER_DNA_FEATURES = [
 # Each feature maps to one of the 8 tactical DNA pillars.
 # Computed from StatsBomb team_match_stats aggregates.
 STATSBOMB_DNA_FEATURES = [
-    "pressing_intensity",       # Pillar 4: Press (PPDA inverted, poss-adjusted)
-    "counterpress_rate",        # Pillar 4: Counterpress tendency
-    "build_up_patience",        # Pillar 2: Passes per possession / sequence length
-    "directness",               # Pillar 2: Forward progression speed
-    "chance_quality",           # Pillar 3: xG per shot
-    "defensive_line_height",    # Pillar 5: Average defensive action distance
-    "width_usage",              # Pillar 7: Cross + wide action share
-    "set_piece_emphasis",       # Pillar 8: Set-piece xG share
-    "transition_threat",        # Pillar 6: Counter-attacking shots
-    "defensive_solidity",       # Pillar 5: xGA quality (inverted)
+    # Pillar 1: Shape & Occupation
+    "possession",                   # Possession average
+    "passes_inside_box",            # Passes completed inside the box
+    "obv_defensive_action",         # OBV from defensive actions (positional discipline)
+    # Pillar 2: Build-up
+    "build_up_patience",            # Passes per possession / sequence length
+    "pass_accuracy",                # Passing completion rate
+    "gk_pass_distance",             # GK avg pass distance (short = build from back)
+    "deep_progressions",            # Entries into final third
+    "obv_pass",                     # OBV from passing
+    # Pillar 3: Chance Creation
+    "chance_quality",               # xG per shot
+    "np_xg",                        # Non-penalty xG volume
+    "deep_completions",             # Passes within 20m of goal
+    "shots_in_clear",               # 1v1 shot opportunities
+    "obv_dribble_carry",            # OBV from dribbles & carries
+    # Pillar 4: Press & Counterpress
+    "pressing_intensity",           # PPDA inverted, poss-adjusted
+    "counterpress_rate",            # Counterpress tendency
+    "fhalf_pressures_ratio",        # % of pressures in opposition half
+    "pressure_regains",             # Regains from pressing
+    "aggression",                   # Proportion of receipts pressured within 2s
+    # Pillar 5: Block & Line Height
+    "defensive_line_height",        # Average defensive action distance
+    "np_xg_per_shot_conceded",      # Quality of shots allowed (lower = better)
+    "passes_inside_box_conceded",   # Box entries allowed
+    "deep_completions_conceded",    # Deep passes allowed
+    # Pillar 6: Transitions
+    "transition_threat",            # Counter-attacking shots
+    "high_press_shots",             # Shots from high turnovers
+    "pace_towards_goal",            # Speed of buildup to shot (m/s)
+    "counter_shots_conceded",       # Defensive transition vulnerability
+    # Pillar 7: Width & Overloads
+    "width_usage",                  # Crosses into box
+    "successful_crosses",           # Successful crosses into box
+    "completed_dribbles",           # Dribbles completed
+    "dribble_ratio",                # Dribble success rate
+    # Pillar 8: Set Pieces
+    "set_piece_emphasis",           # SP xG share of total xG
+    "xg_per_sp",                    # xG yield per set piece
+    "sp_shot_ratio",                # Shots per set piece
+    "corner_xg",                    # Corner kick xG
 ]
 
 # The 8 Tactical DNA Pillars (Gary's framework)
@@ -89,54 +121,115 @@ DNA_PILLARS = {
     "shape_occupation": {
         "name": "Shape & Occupation",
         "number": 1,
-        "metrics": ["defensive_line_height", "possession"],
-        "description": "Base shape (IP/OOP), rest defence, role clarity",
+        "metrics": ["possession", "passes_inside_box", "obv_defensive_action",
+                     "deep_progressions_conceded", "clean_sheet_pct"],
+        "description": "Base shape (IP/OOP), rest defence, positional discipline, box control",
     },
     "build_up": {
         "name": "Build-up vs Direct",
         "number": 2,
-        "metrics": ["build_up_patience", "directness", "pass_accuracy"],
-        "description": "Progression routes, pass/carry mix, tempo & patience",
+        "metrics": ["possession", "pass_accuracy", "gk_pass_distance",
+                     "deep_progressions", "obv_pass", "directness"],
+        "description": "Progression routes, GK distribution, pass value, tempo & patience",
     },
     "chance_creation": {
         "name": "Chance Creation",
         "number": 3,
-        "metrics": ["chance_quality", "np_xg_pg", "deep_completions_pg"],
-        "description": "Shot profile, assist types, zone entry patterns",
+        "metrics": ["np_xg", "chance_quality", "deep_completions",
+                     "shots_in_clear", "obv_dribble_carry"],
+        "description": "Shot volume & quality, 1v1 opportunities, creative carrying",
     },
     "press_counterpress": {
         "name": "Press & Counterpress",
         "number": 4,
-        "metrics": ["pressing_intensity", "counterpress_rate", "high_regain_rate"],
-        "description": "Pressure volume, counterpress, high regains",
+        "metrics": ["pressing_intensity", "counterpress_rate", "fhalf_pressures_ratio",
+                     "pressure_regains", "aggression", "defensive_action_regains"],
+        "description": "Press intensity, territorial pressure, regain efficiency, aggression",
     },
     "block_line_height": {
         "name": "Block & Line Height",
         "number": 5,
-        "metrics": ["defensive_line_height", "defensive_solidity", "xga_pg"],
-        "description": "Def action height, box protection, balls in behind",
+        "metrics": ["defensive_line_height", "np_xg_per_shot_conceded",
+                     "passes_inside_box_conceded", "deep_completions_conceded", "np_xg_conceded"],
+        "description": "Line height, shot quality denial, box protection, compactness",
     },
     "transitions": {
         "name": "Transitions",
         "number": 6,
-        "metrics": ["transition_threat", "high_press_shots_pg", "turnover_shots_conceded_pg"],
-        "description": "Time-to-shot, turnover risk, counter-attack",
+        "metrics": ["transition_threat", "high_press_shots", "pace_towards_goal",
+                     "obv_dribble_carry", "counter_shots_conceded", "ball_in_play_time"],
+        "description": "Counter speed, turnover exploitation, transition defence, tempo",
     },
     "width_overloads": {
         "name": "Width & Overloads",
         "number": 7,
-        "metrics": ["width_usage", "cross_rate", "box_cross_ratio"],
-        "description": "Wing usage, switches, cross/cutback mix",
+        "metrics": ["width_usage", "successful_crosses", "completed_dribbles",
+                     "dribble_ratio", "successful_box_cross_ratio"],
+        "description": "Wing usage, crossing quality, take-on success, wide overloads",
     },
     "set_pieces": {
         "name": "Set Pieces",
         "number": 8,
-        "metrics": ["set_piece_emphasis", "sp_xg_pg", "sp_xg_against_pg"],
-        "description": "Set-piece xG share, routines, second-phase control",
+        "metrics": ["set_piece_emphasis", "xg_per_sp", "sp_shot_ratio",
+                     "corner_xg", "xg_per_sp_conceded", "sp_xg"],
+        "description": "SP xG share, routine efficiency, corner quality, defensive resilience",
     },
 }
 
 
+# ─────────────────────────────────────────────────────────────────────
+# PILLAR → FEATURE PERCENTILE MAPPING
+# ─────────────────────────────────────────────────────────────────────
+# Maps each of the 8 pillars to the training-data features that drive it.
+# "inverted" features are those where LOWER raw values mean HIGHER pillar
+# contribution (e.g. shorter GK pass distance → more build-from-back).
+#
+# After fit(), each feature is percentile-ranked across the training
+# population, inverted features are flipped (100 − percentile), then
+# the pillar score = mean percentile of its features.  This guarantees
+# 0–100 scores that spread the full range automatically.
+
+PILLAR_PERCENTILE_MAP = {
+    "shape_occupation": {
+        "features": ["possession", "passes_inside_box", "obv_defensive_action"],
+        "inverted": [],
+    },
+    "build_up": {
+        "features": ["build_up_patience", "pass_accuracy", "gk_pass_distance",
+                      "deep_progressions", "obv_pass"],
+        "inverted": ["gk_pass_distance"],
+    },
+    "chance_creation": {
+        "features": ["chance_quality", "np_xg", "deep_completions",
+                      "shots_in_clear", "obv_dribble_carry"],
+        "inverted": [],
+    },
+    "press_counterpress": {
+        "features": ["pressing_intensity", "counterpress_rate", "fhalf_pressures_ratio",
+                      "pressure_regains", "aggression"],
+        "inverted": [],
+    },
+    "block_line_height": {
+        "features": ["defensive_line_height", "np_xg_per_shot_conceded",
+                      "passes_inside_box_conceded", "deep_completions_conceded"],
+        "inverted": ["np_xg_per_shot_conceded", "passes_inside_box_conceded",
+                      "deep_completions_conceded"],
+    },
+    "transitions": {
+        "features": ["transition_threat", "high_press_shots", "pace_towards_goal",
+                      "counter_shots_conceded"],
+        "inverted": ["counter_shots_conceded"],
+    },
+    "width_overloads": {
+        "features": ["width_usage", "successful_crosses", "completed_dribbles",
+                      "dribble_ratio"],
+        "inverted": [],
+    },
+    "set_pieces": {
+        "features": ["set_piece_emphasis", "xg_per_sp", "sp_shot_ratio", "corner_xg"],
+        "inverted": [],
+    },
+}
 
 # ─────────────────────────────────────────────────────────────────────
 # PILLAR → PLAYER DEMAND TRANSLATION MATRIX
@@ -154,7 +247,7 @@ PILLAR_PLAYER_DEMANDS = {
     # ── Pillar 1: Shape & Occupation ──
     # High = structured, disciplined positional play
     "shape_occupation": {
-        "GK":  {"pass_accuracy": 0.5},
+        "GK":  {"pass_accuracy": 0.7, "interceptions_per90": 0.3},
         "DEF": {"interceptions_per90": 0.5, "pass_accuracy": 0.6, "tackles_per90": 0.3},
         "MID": {"pass_accuracy": 0.7, "key_passes_per90": 0.4, "interceptions_per90": 0.3},
         "ATT": {"shots_per90": 0.3, "goals_per90": 0.3},
@@ -162,7 +255,7 @@ PILLAR_PLAYER_DEMANDS = {
     # ── Pillar 2: Build-up (patience) ──
     # High = patient possession build from back
     "build_up": {
-        "GK":  {"pass_accuracy": 0.8},
+        "GK":  {"pass_accuracy": 1.0, "key_passes_per90": 0.3, "assists_per90": 0.2},
         "DEF": {"pass_accuracy": 0.8, "dribbles_per90": 0.4, "key_passes_per90": 0.3},
         "MID": {"pass_accuracy": 0.7, "key_passes_per90": 0.6, "dribbles_per90": 0.4},
         "ATT": {"assists_per90": 0.4, "key_passes_per90": 0.5, "pass_accuracy": 0.3},
@@ -170,7 +263,7 @@ PILLAR_PLAYER_DEMANDS = {
     # ── Pillar 3: Chance Creation ──
     # High = creates high-quality chances (xG per shot)
     "chance_creation": {
-        "GK":  {},
+        "GK":  {"pass_accuracy": 0.4, "key_passes_per90": 0.3, "assists_per90": 0.3},
         "DEF": {"key_passes_per90": 0.3, "assists_per90": 0.3},
         "MID": {"key_passes_per90": 0.8, "assists_per90": 0.6, "dribbles_per90": 0.4, "shots_per90": 0.3},
         "ATT": {"goals_per90": 0.7, "shots_per90": 0.8, "key_passes_per90": 0.3, "dribbles_per90": 0.4},
@@ -178,15 +271,15 @@ PILLAR_PLAYER_DEMANDS = {
     # ── Pillar 4: Press & Counterpress ──
     # High = intense pressing, aggressive counterpressing
     "press_counterpress": {
-        "GK":  {"interceptions_per90": 0.3},
+        "GK":  {"pass_accuracy": 0.4, "interceptions_per90": 0.3},
         "DEF": {"tackles_per90": 0.7, "interceptions_per90": 0.7},
         "MID": {"tackles_per90": 0.8, "interceptions_per90": 0.6},
         "ATT": {"tackles_per90": 0.5, "interceptions_per90": 0.3},
     },
     # ── Pillar 5: Block & Line Height ──
-    # High = high line with proactive defending
+    # High = high line with proactive defending (sweeper keeper demands)
     "block_line_height": {
-        "GK":  {"pass_accuracy": 0.3},
+        "GK":  {"pass_accuracy": 0.5, "interceptions_per90": 0.4},
         "DEF": {"tackles_per90": 0.6, "interceptions_per90": 0.7, "pass_accuracy": 0.3},
         "MID": {"tackles_per90": 0.5, "interceptions_per90": 0.5},
         "ATT": {"tackles_per90": 0.2},
@@ -194,7 +287,7 @@ PILLAR_PLAYER_DEMANDS = {
     # ── Pillar 6: Transitions ──
     # High = dangerous in transition / counter-attacking
     "transitions": {
-        "GK":  {"pass_accuracy": 0.3},
+        "GK":  {"pass_accuracy": 0.5, "key_passes_per90": 0.3},
         "DEF": {"dribbles_per90": 0.3, "pass_accuracy": 0.4},
         "MID": {"dribbles_per90": 0.5, "key_passes_per90": 0.5, "shots_per90": 0.3},
         "ATT": {"goals_per90": 0.6, "dribbles_per90": 0.7, "shots_per90": 0.5},
@@ -202,7 +295,7 @@ PILLAR_PLAYER_DEMANDS = {
     # ── Pillar 7: Width & Overloads ──
     # High = heavy use of width, crossing, overlaps
     "width_overloads": {
-        "GK":  {},
+        "GK":  {"pass_accuracy": 0.3, "key_passes_per90": 0.2},
         "DEF": {"assists_per90": 0.5, "dribbles_per90": 0.5, "key_passes_per90": 0.4},
         "MID": {"key_passes_per90": 0.5, "assists_per90": 0.4, "dribbles_per90": 0.3},
         "ATT": {"dribbles_per90": 0.7, "assists_per90": 0.5, "key_passes_per90": 0.4},
@@ -210,7 +303,7 @@ PILLAR_PLAYER_DEMANDS = {
     # ── Pillar 8: Set Pieces ──
     # High = relies on set pieces for xG share
     "set_pieces": {
-        "GK":  {},
+        "GK":  {"pass_accuracy": 0.3},
         "DEF": {"goals_per90": 0.6},
         "MID": {"assists_per90": 0.5, "key_passes_per90": 0.5},
         "ATT": {"goals_per90": 0.6, "shots_per90": 0.4},
@@ -279,9 +372,9 @@ IDEAL_PLAYER_PROFILES = {
         "goals_per90": 0.0,
         "assists_per90": 0.02,
         "tackles_per90": 0.1,
-        "interceptions_per90": 0.2,
-        "pass_accuracy": 75.0,
-        "key_passes_per90": 0.1,
+        "interceptions_per90": 0.3,
+        "pass_accuracy": 80.0,
+        "key_passes_per90": 0.15,
         "dribbles_per90": 0.0,
         "shots_per90": 0.0
     },
@@ -976,6 +1069,35 @@ class ManagerDNATrainer:
                 possessions_pg = avg_stat("team_match_possessions", 50)
                 obv = avg_stat("team_match_obv", 0.0)
                 
+                # ── Extended metrics for enriched pillar differentiation ──
+                obv_pass = avg_stat("team_match_obv_pass", 0.0)
+                obv_dribble_carry = avg_stat("team_match_obv_dribble_carry", 0.0)
+                obv_defensive = avg_stat("team_match_obv_defensive_action", 0.0)
+                gk_pass_distance = avg_stat("team_match_gk_pass_distance", 25.0)
+                fhalf_pressures_ratio = avg_stat("team_match_fhalf_pressures_ratio", 40.0)
+                aggression = avg_stat("team_match_aggression", 0.15)
+                defensive_action_regains = avg_stat("team_match_defensive_action_regains", 15)
+                np_xg_per_shot_conceded = avg_stat("team_match_np_xg_per_shot_conceded", 0.10)
+                passes_inside_box = avg_stat("team_match_passes_inside_box", 10)
+                passes_inside_box_conceded = avg_stat("team_match_passes_inside_box_conceded", 8)
+                deep_completions_conceded = avg_stat("team_match_deep_completions_conceded", 5.0)
+                deep_progs_conceded = avg_stat("team_match_deep_progressions_conceded", 20.0)
+                shots_in_clear = avg_stat("team_match_shots_in_clear", 0.5)
+                counter_shots_conceded = avg_stat("team_match_counter_attacking_shots_conceded", 1.0)
+                pace_towards_goal = avg_stat("team_match_pace_towards_goal", 1.0)
+                ball_in_play_time = avg_stat("team_match_ball_in_play_time", 55.0)
+                successful_crosses = avg_stat("team_match_successful_crosses_into_box", 2.0)
+                successful_box_cross_ratio = avg_stat("team_match_successful_box_cross_ratio", 20.0)
+                completed_dribbles = avg_stat("team_match_completed_dribbles", 8.0)
+                dribble_ratio = avg_stat("team_match_dribble_ratio", 50.0)
+                sp_count = avg_stat("team_match_sp", 10)
+                xg_per_sp = avg_stat("team_match_xg_per_sp", 0.03)
+                sp_shot_ratio = avg_stat("team_match_sp_shot_ratio", 0.2)
+                corner_xg = avg_stat("team_match_corner_xg", 0.15)
+                xg_per_corner = avg_stat("team_match_xg_per_corner", 0.03)
+                sp_xg_conceded = avg_stat("team_match_sp_xg_conceded", 0.3)
+                xg_per_sp_conceded = avg_stat("team_match_xg_per_sp_conceded", 0.03)
+                
                 goals_scored_pg = round(results["gf"] / total_matches, 2) if results["gf"] else 1.5
                 goals_conceded_pg = round(results["ga"] / total_matches, 2) if results["ga"] else 1.2
                 clean_sheet_pct = round(results["cs"] / total_matches * 100, 1)
@@ -987,15 +1109,12 @@ class ManagerDNATrainer:
                 pressing_intensity = round(max(0, 30 - ppda), 1)
                 
                 # P4: Counterpress rate
-                counterpress_rate = round(
+                counterpress_rate_pct = round(
                     counterpressures / max(pressures, 1) * 100, 1
                 )
                 
                 # P2: Build-up patience (passes per possession proxy)
                 build_up_patience = round(100 - (directness_raw * 100), 1)
-                
-                # P2: Directness (0–100 scale)
-                directness_score = round(directness_raw * 100, 1)
                 
                 # P3: Chance creation quality (xG per shot)
                 chance_quality = round(np_xg / max(np_shots, 1), 3)
@@ -1015,22 +1134,51 @@ class ManagerDNATrainer:
                 # P6: Transition threat (counter-attacking shots per game)
                 transition_threat = round(counter_shots, 2)
                 
-                # P5: Defensive solidity (inverted xGA, scaled)
-                defensive_solidity = round(max(0, 3.0 - np_xg_conceded) * 33.3, 1)
-                
                 # Build feature dict matching STATSBOMB_DNA_FEATURES
                 features = {
-                    # Clustering features (STATSBOMB_DNA_FEATURES)
-                    "pressing_intensity": pressing_intensity,
-                    "counterpress_rate": counterpress_rate,
+                    # ── Clustering features (STATSBOMB_DNA_FEATURES) ──
+                    # P1: Shape & Occupation
+                    "possession": possession,
+                    "passes_inside_box": passes_inside_box,
+                    "obv_defensive_action": obv_defensive,
+                    # P2: Build-up
                     "build_up_patience": build_up_patience,
-                    "directness": directness_score,
+                    "pass_accuracy": passing_ratio,
+                    "gk_pass_distance": gk_pass_distance,
+                    "deep_progressions": deep_progressions,
+                    "obv_pass": obv_pass,
+                    # P3: Chance Creation
                     "chance_quality": chance_quality,
+                    "np_xg": np_xg,
+                    "deep_completions": deep_completions,
+                    "shots_in_clear": shots_in_clear,
+                    "obv_dribble_carry": obv_dribble_carry,
+                    # P4: Press & Counterpress
+                    "pressing_intensity": pressing_intensity,
+                    "counterpress_rate": counterpress_rate_pct,
+                    "fhalf_pressures_ratio": fhalf_pressures_ratio,
+                    "pressure_regains": pressure_regains,
+                    "aggression": aggression,
+                    # P5: Block & Line Height
                     "defensive_line_height": defensive_line_height,
-                    "width_usage": width_usage,
-                    "set_piece_emphasis": set_piece_emphasis,
+                    "np_xg_per_shot_conceded": np_xg_per_shot_conceded,
+                    "passes_inside_box_conceded": passes_inside_box_conceded,
+                    "deep_completions_conceded": deep_completions_conceded,
+                    # P6: Transitions
                     "transition_threat": transition_threat,
-                    "defensive_solidity": defensive_solidity,
+                    "high_press_shots": high_press_shots,
+                    "pace_towards_goal": pace_towards_goal,
+                    "counter_shots_conceded": counter_shots_conceded,
+                    # P7: Width & Overloads
+                    "width_usage": width_usage,
+                    "successful_crosses": successful_crosses,
+                    "completed_dribbles": completed_dribbles,
+                    "dribble_ratio": dribble_ratio,
+                    # P8: Set Pieces
+                    "set_piece_emphasis": set_piece_emphasis,
+                    "xg_per_sp": xg_per_sp,
+                    "sp_shot_ratio": sp_shot_ratio,
+                    "corner_xg": corner_xg,
                     # Metadata
                     "coach_id": team_id,
                     "coach_name": info["manager_name"],
@@ -1055,6 +1203,32 @@ class ManagerDNATrainer:
                     "_goals_conceded_pg": goals_conceded_pg,
                     "_clean_sheet_pct": clean_sheet_pct,
                     "_win_rate": win_rate,
+                    "_aggression": aggression,
+                    "_defensive_action_regains_pg": defensive_action_regains,
+                    "_gk_pass_distance": gk_pass_distance,
+                    "_obv_pass_pg": obv_pass,
+                    "_obv_dribble_carry_pg": obv_dribble_carry,
+                    "_obv_defensive_pg": obv_defensive,
+                    "_fhalf_pressures_ratio": fhalf_pressures_ratio,
+                    "_passes_inside_box_pg": passes_inside_box,
+                    "_passes_inside_box_conceded_pg": passes_inside_box_conceded,
+                    "_deep_completions_conceded_pg": deep_completions_conceded,
+                    "_deep_progs_conceded_pg": deep_progs_conceded,
+                    "_shots_in_clear_pg": shots_in_clear,
+                    "_counter_shots_conceded_pg": counter_shots_conceded,
+                    "_pace_towards_goal": pace_towards_goal,
+                    "_ball_in_play_time": ball_in_play_time,
+                    "_successful_crosses_pg": successful_crosses,
+                    "_successful_box_cross_ratio": successful_box_cross_ratio,
+                    "_completed_dribbles_pg": completed_dribbles,
+                    "_dribble_ratio": dribble_ratio,
+                    "_xg_per_sp": xg_per_sp,
+                    "_sp_shot_ratio": sp_shot_ratio,
+                    "_corner_xg_pg": corner_xg,
+                    "_xg_per_corner": xg_per_corner,
+                    "_sp_xg_conceded_pg": sp_xg_conceded,
+                    "_xg_per_sp_conceded": xg_per_sp_conceded,
+                    "_np_xg_per_shot_conceded": np_xg_per_shot_conceded,
                 }
                 
                 self.manager_tenures.append({
@@ -1290,6 +1464,9 @@ class ManagerDNATrainer:
         # Auto-name clusters
         self._name_clusters(verbose)
         
+        # Compute percentile-based pillar scores for every manager
+        self._compute_pillar_percentiles(verbose)
+        
         if verbose:
             print("\n" + "-" * 60)
             print("CLUSTER ASSIGNMENTS:")
@@ -1430,6 +1607,74 @@ class ManagerDNATrainer:
 
         self.df_managers["cluster_name"] = self.df_managers["cluster"].map(self.cluster_names)
         self.df_centroids["cluster_name"] = self.df_centroids["cluster"].map(self.cluster_names)
+
+    def _compute_pillar_percentiles(self, verbose: bool = True):
+        """
+        Compute percentile-based pillar scores for every manager in the
+        training population.
+        
+        For each pillar:
+          1. Look up its constituent features in PILLAR_PERCENTILE_MAP
+          2. Percentile-rank each feature across the training population
+          3. Flip inverted features (100 − percentile)
+          4. Pillar score = mean percentile of its features (0–100)
+        
+        Stores results as columns ``pillar_pct_{key}`` in self.df_managers.
+        """
+        import pandas as pd
+        
+        if verbose:
+            print("\n  Computing percentile-based pillar scores...")
+        
+        for pillar_key, cfg in PILLAR_PERCENTILE_MAP.items():
+            feature_pcts = []
+            
+            for feat in cfg["features"]:
+                if feat not in self.df_managers.columns:
+                    # Try _ prefix variant
+                    alt = f"_{feat}"
+                    if alt in self.df_managers.columns:
+                        feat = alt
+                    else:
+                        continue
+                
+                # Percentile rank: 0 = lowest in population, 100 = highest
+                series = pd.to_numeric(self.df_managers[feat], errors="coerce")
+                pct = series.rank(pct=True) * 100
+                
+                # Flip inverted features (lower raw = higher pillar contribution)
+                base_feat = feat.lstrip("_")
+                if base_feat in cfg["inverted"] or feat in cfg["inverted"]:
+                    pct = 100 - pct
+                
+                feature_pcts.append(pct)
+            
+            if feature_pcts:
+                pillar_score = pd.concat(feature_pcts, axis=1).mean(axis=1).round(0).astype(int)
+            else:
+                pillar_score = 50  # fallback
+            
+            col_name = f"pillar_pct_{pillar_key}"
+            self.df_managers[col_name] = pillar_score
+        
+        # ── Second pass: re-percentile the pillar scores themselves ──
+        # Averaging multiple feature percentiles compresses toward the center
+        # (regression to mean). Re-ranking forces each pillar to use the
+        # full 0–100 range across the training population.
+        pillar_cols = [c for c in self.df_managers.columns if c.startswith("pillar_pct_")]
+        for col in pillar_cols:
+            raw = self.df_managers[col]
+            self.df_managers[col] = (raw.rank(pct=True) * 100).round(0).astype(int)
+        
+        if verbose:
+            # Show a sample of the spread
+            if pillar_cols:
+                print(f"  Pillar score ranges across {len(self.df_managers)} managers:")
+                for col in pillar_cols:
+                    pname = col.replace("pillar_pct_", "")
+                    lo = self.df_managers[col].min()
+                    hi = self.df_managers[col].max()
+                    print(f"    {pname:25s}  {lo:3.0f} – {hi:3.0f}")
 
     def save(self, verbose: bool = True) -> "ManagerDNATrainer":
         """Save model and data to files."""
@@ -1600,9 +1845,43 @@ class SquadFitAnalyzer:
         Uses the manager's ACTUAL tactical features from training to compute
         pillar scores. This is the correct method for hypothetical scenarios
         ("what if Arteta managed Chelsea?").
+        
+        Name matching strategy (cascading):
+          1. Exact substring  ("Eddie Howe" in "Eddie Howe")
+          2. Last-name match  ("Howe" in "Edward John Frank Howe")
+          3. Any-token match  ("Arteta" in "Mikel Arteta Amatriain")
+          4. Fail → ValueError
         """
-        mask = self.df_managers["coach_name"].str.contains(manager_name, case=False, na=False)
+        names = self.df_managers["coach_name"].fillna("")
+        
+        # Strategy 1: full substring match (original logic)
+        mask = names.str.contains(manager_name, case=False, na=False)
         matches = self.df_managers[mask]
+        
+        # Strategy 2: try last name token (handles "Eddie Howe" → "Edward ... Howe")
+        if matches.empty:
+            tokens = manager_name.strip().split()
+            if tokens:
+                last = tokens[-1]
+                mask = names.str.contains(last, case=False, na=False)
+                matches = self.df_managers[mask]
+                if verbose and not matches.empty:
+                    print(f"  (Matched '{manager_name}' via last name '{last}'"
+                          f" → '{matches.iloc[0]['coach_name']}')")
+        
+        # Strategy 3: try each token, accept if unique match
+        if matches.empty:
+            for token in sorted(tokens, key=len, reverse=True):
+                if len(token) < 3:
+                    continue  # skip initials
+                mask = names.str.contains(token, case=False, na=False)
+                candidates = self.df_managers[mask]
+                if len(candidates) == 1:
+                    matches = candidates
+                    if verbose:
+                        print(f"  (Matched '{manager_name}' via token '{token}'"
+                              f" → '{matches.iloc[0]['coach_name']}')")
+                    break
         
         if matches.empty:
             raise ValueError(
@@ -1615,36 +1894,75 @@ class SquadFitAnalyzer:
         self.target_cluster = int(manager["cluster"])
         self.target_cluster_name = self.model["cluster_names"][self.target_cluster]
         
-        # Compute pillar scores from the manager's actual training features
-        # These reflect their real tactical profile (e.g., Arteta from Arsenal data)
-        if all(f in manager.index for f in STATSBOMB_DNA_FEATURES):
-            self.manager_pillar_scores = {
-                "shape_occupation": min(100, round(
-                    float(manager.get("defensive_line_height", 40)) * 1.5 + 
-                    float(manager.get("defensive_solidity", 50)) * 0.3, 0)),
-                "build_up": min(100, round(float(manager.get("build_up_patience", 50)), 0)),
-                "chance_creation": min(100, round(float(manager.get("chance_quality", 0.1)) * 500, 0)),
-                "press_counterpress": min(100, round(float(manager.get("pressing_intensity", 15)) * 4, 0)),
-                "block_line_height": min(100, round(
-                    float(manager.get("defensive_line_height", 40)) * 1.5 + 
-                    float(manager.get("defensive_solidity", 50)) * 0.5, 0)),
-                "transitions": min(100, round(float(manager.get("transition_threat", 1)) * 25, 0)),
-                "width_overloads": min(100, round(float(manager.get("width_usage", 5)) * 10, 0)),
-                "set_pieces": min(100, round(float(manager.get("set_piece_emphasis", 20)) * 2, 0)),
-            }
+        # Use pre-computed percentile-based pillar scores from training
+        # These are computed in ManagerDNATrainer.fit() → _compute_pillar_percentiles()
+        # and guarantee differentiated 0–100 scores across the population
+        pillar_cols = [c for c in manager.index if c.startswith("pillar_pct_")]
+        
+        if pillar_cols:
+            self.manager_pillar_scores = {}
+            for col in pillar_cols:
+                pillar_key = col.replace("pillar_pct_", "")
+                self.manager_pillar_scores[pillar_key] = int(manager[col])
             
             if verbose:
                 print(f"\nTarget Manager: {self.target_manager}")
                 print(f"  Team: {manager.get('team_name', '?')}")
                 print(f"  Tactical Archetype: {self.target_cluster_name}")
-                print(f"  Pillar scores (from training data):")
+                print(f"  Pillar scores (percentile-based):")
                 for k, v in self.manager_pillar_scores.items():
                     print(f"    {k}: {v}")
         else:
-            self.manager_pillar_scores = None
+            # Old model without pillar_pct columns — compute on-the-fly
+            # by ranking this manager's features against the training population
+            import pandas as pd
+            
+            self.manager_pillar_scores = {}
+            for pillar_key, cfg in PILLAR_PERCENTILE_MAP.items():
+                pcts = []
+                for feat in cfg["features"]:
+                    mgr_val = manager.get(feat)
+                    if mgr_val is None or pd.isna(mgr_val):
+                        # Try _ prefix variant
+                        mgr_val = manager.get(f"_{feat}")
+                    if mgr_val is None or pd.isna(mgr_val):
+                        continue
+                    mgr_val = float(mgr_val)
+                    
+                    col = feat if feat in self.df_managers.columns else f"_{feat}"
+                    if col not in self.df_managers.columns:
+                        continue
+                    train_vals = pd.to_numeric(self.df_managers[col], errors="coerce").dropna()
+                    if train_vals.empty:
+                        continue
+                    pct = (train_vals < mgr_val).sum() / len(train_vals) * 100
+                    
+                    base_feat = feat.lstrip("_")
+                    if base_feat in cfg["inverted"] or feat in cfg["inverted"]:
+                        pct = 100 - pct
+                    pcts.append(pct)
+                
+                self.manager_pillar_scores[pillar_key] = round(sum(pcts) / len(pcts)) if pcts else 50
+
+            # Second pass: rescale against training population's pillar distributions
+            # to counteract the regression-to-mean from averaging feature percentiles
+            for pk in list(self.manager_pillar_scores.keys()):
+                raw_score = self.manager_pillar_scores[pk]
+                pcol = f"pillar_pct_{pk}"
+                if pcol in self.df_managers.columns:
+                    tp = pd.to_numeric(self.df_managers[pcol], errors="coerce").dropna()
+                    if not tp.empty:
+                        rescaled = (tp < raw_score).sum() / len(tp) * 100
+                        self.manager_pillar_scores[pk] = round(rescaled)
+
+            
             if verbose:
                 print(f"\nTarget Manager: {self.target_manager}")
+                print(f"  Team: {manager.get('team_name', '?')}")
                 print(f"  Tactical Archetype: {self.target_cluster_name}")
+                print(f"  Pillar scores (percentile, computed on-the-fly):")
+                for k, v in self.manager_pillar_scores.items():
+                    print(f"    {k}: {v}")
         
         if verbose:
             same_cluster = self.df_managers[self.df_managers["cluster"] == self.target_cluster]
@@ -1670,8 +1988,10 @@ class SquadFitAnalyzer:
         self.target_manager = manager_dna.get("manager", "Unknown")
         self.target_club = manager_dna.get("team", "Unknown")
         
-        # Store pillar scores for dynamic weight computation
-        self.manager_pillar_scores = manager_dna.get("pillar_scores", None)
+        # ETL may provide pillar_scores but these use hand-coded formulas
+        # that produce near-identical values. Ignore them — we'll compute
+        # percentile-based scores below against the training population.
+        self.manager_pillar_scores = None
         
         tp = manager_dna.get("tactical_profile", {})
         rp = manager_dna.get("results_profile", {})
@@ -1738,6 +2058,50 @@ class SquadFitAnalyzer:
             print(f"  Team: {self.target_club}")
             print(f"  Tactical Archetype: {self.target_cluster_name}")
             print(f"  (Assigned from DNA, data mode: {manager_dna.get('data_mode', '?')})")
+        
+        # Compute percentile-based pillar scores by ranking this manager's
+        # features against the training population (even though they're not in it)
+        if self.manager_pillar_scores is None and self.df_managers is not None:
+            import pandas as pd
+            
+            self.manager_pillar_scores = {}
+            for pillar_key, cfg in PILLAR_PERCENTILE_MAP.items():
+                pcts = []
+                for feat in cfg["features"]:
+                    mgr_val = features.get(feat)
+                    if mgr_val is None:
+                        continue
+                    col = feat if feat in self.df_managers.columns else f"_{feat}"
+                    if col not in self.df_managers.columns:
+                        continue
+                    train_vals = pd.to_numeric(self.df_managers[col], errors="coerce").dropna()
+                    if train_vals.empty:
+                        continue
+                    pct = (train_vals < mgr_val).sum() / len(train_vals) * 100
+                    
+                    base_feat = feat.lstrip("_")
+                    if base_feat in cfg["inverted"] or feat in cfg["inverted"]:
+                        pct = 100 - pct
+                    pcts.append(pct)
+                
+                self.manager_pillar_scores[pillar_key] = round(sum(pcts) / len(pcts)) if pcts else 50
+
+            # Second pass: rescale against training population's pillar distributions
+            # to counteract the regression-to-mean from averaging feature percentiles
+            for pk in list(self.manager_pillar_scores.keys()):
+                raw_score = self.manager_pillar_scores[pk]
+                pcol = f"pillar_pct_{pk}"
+                if pcol in self.df_managers.columns:
+                    tp = pd.to_numeric(self.df_managers[pcol], errors="coerce").dropna()
+                    if not tp.empty:
+                        rescaled = (tp < raw_score).sum() / len(tp) * 100
+                        self.manager_pillar_scores[pk] = round(rescaled)
+
+            
+            if verbose:
+                print(f"  Pillar scores (percentile vs training population):")
+                for k, v in self.manager_pillar_scores.items():
+                    print(f"    {k}: {v}")
         
         return self
     
@@ -1942,20 +2306,59 @@ class SquadFitAnalyzer:
         Compute position-specific feature weights from manager's 8-pillar DNA.
         
         Each pillar's demand matrix is scaled by the manager's actual score
-        on that pillar (0-100 -> 0-1). Base weight of 0.5 ensures all features
-        contribute, preventing any feature from being zeroed out.
+        on that pillar (0-100 -> 0-1), then amplified to ensure meaningfully
+        different weight profiles between different tactical styles.
+        
+        Base weight is intentionally low (0.1) so pillar-driven demands
+        dominate. A ×2.0 amplifier widens the gap between high-scoring and
+        low-scoring pillars, translating into distinct player evaluations.
+        
+        GK override: Goalkeepers are evaluated primarily on pass_accuracy
+        (distribution quality) with reduced weight on outfield-only metrics.
         """
-        weights = {f: 0.5 for f in PLAYER_FIT_FEATURES}
+        # Low base ensures pillar variation dominates weight profiles
+        weights = {f: 0.1 for f in PLAYER_FIT_FEATURES}
         
         if not self.manager_pillar_scores:
+            # No pillar data — fall back to uniform weights (legacy mode)
+            weights = {f: 0.5 for f in PLAYER_FIT_FEATURES}
+            if position_group == "GK":
+                return self._apply_gk_weight_override(weights)
             return weights
+        
+        # Pillar-driven weight accumulation with amplifier
+        PILLAR_AMPLIFIER = 2.0
         
         for pillar_key, demands_by_pos in PILLAR_PLAYER_DEMANDS.items():
             pillar_score = self.manager_pillar_scores.get(pillar_key, 50) / 100.0
             demands = demands_by_pos.get(position_group, {})
             for feature, demand_strength in demands.items():
                 if feature in weights:
-                    weights[feature] += pillar_score * demand_strength
+                    weights[feature] += pillar_score * demand_strength * PILLAR_AMPLIFIER
+        
+        if position_group == "GK":
+            weights = self._apply_gk_weight_override(weights)
+        
+        return weights
+    
+    def _apply_gk_weight_override(self, weights: Dict[str, float]) -> Dict[str, float]:
+        """
+        Override weights for goalkeepers.
+        
+        GKs have near-zero values for goals, dribbles, shots — these don't
+        differentiate good from bad keepers. Pass accuracy (distribution),
+        interceptions (sweeper actions), and assists/key passes (distribution
+        quality) are the meaningful discriminators within the existing feature set.
+        """
+        # Features that don't meaningfully differentiate GKs — suppress to near-zero
+        suppress = {"goals_per90": 0.05, "dribbles_per90": 0.05, "shots_per90": 0.05, "tackles_per90": 0.1}
+        # Features that do differentiate GKs — boost
+        boost = {"pass_accuracy": 2.5, "interceptions_per90": 0.8, "key_passes_per90": 0.6, "assists_per90": 0.4}
+        
+        for feat, val in suppress.items():
+            weights[feat] = val
+        for feat, val in boost.items():
+            weights[feat] = max(weights.get(feat, 0.5), val)
         
         return weights
     
@@ -1981,13 +2384,11 @@ class SquadFitAnalyzer:
         
         raw_score = total_weighted_pct / total_weight if total_weight > 0 else 50.0
         
-        # Spread adjustment to avoid scores bunching around 45-55
-        if raw_score >= 65:
-            adjusted = 65 + (raw_score - 65) * 1.3
-        elif raw_score <= 35:
-            adjusted = 35 - (35 - raw_score) * 1.3
-        else:
-            adjusted = raw_score
+        # Spread adjustment: amplify deviations from the 50th-percentile centre
+        # to prevent scores from bunching in the 40-60 range.
+        # A player at raw 60 becomes 65; raw 40 becomes 35; raw 75 becomes 87.5
+        deviation = raw_score - 50.0
+        adjusted = 50.0 + deviation * 1.5
         
         return max(0, min(100, adjusted))
     

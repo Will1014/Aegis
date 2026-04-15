@@ -387,31 +387,8 @@ class AegisVisualizer:
         }
         
         # Build 8-pillar DNA dimensions for radar chart
-        # Priority: explicit dna_dimensions param > aegis_analysis.json > defaults
-        if not dna_dimensions and target_manager_data:
-            # Derive from StatsBomb features in manager_profiles.csv
-            press = self._safe_float(target_manager_data.get("pressing_intensity", 50))
-            patience = self._safe_float(target_manager_data.get("build_up_patience", 50))
-            chance_q = self._safe_float(target_manager_data.get("chance_quality", 0.1))
-            def_height = self._safe_float(target_manager_data.get("defensive_line_height", 40))
-            width = self._safe_float(target_manager_data.get("width_usage", 5))
-            sp_emph = self._safe_float(target_manager_data.get("set_piece_emphasis", 20))
-            trans = self._safe_float(target_manager_data.get("transition_threat", 1))
-            def_solid = self._safe_float(target_manager_data.get("defensive_solidity", 50))
-            counterpress = self._safe_float(target_manager_data.get("counterpress_rate", 30))
-            possession_val = self._safe_float(target_manager_data.get("_possession", 50))
-            
-            dna_dimensions = {
-                "Shape & Occupation": min(100, round(def_height * 1.2 + possession_val * 0.3, 0)),
-                "Build-up": min(100, round(patience, 0)),
-                "Chance Creation": min(100, round(chance_q * 400, 0)),
-                "Press & Counterpress": min(100, round((press + counterpress) / 2, 0)),
-                "Block & Line Height": min(100, round(def_height + def_solid * 0.3, 0)),
-                "Transitions": min(100, round(trans * 25, 0)),
-                "Width & Overloads": min(100, round(width * 10, 0)),
-                "Set Pieces": min(100, round(sp_emph * 2, 0)),
-            }
-        
+        # dna_dimensions should be passed in from __init__.py with percentile-based scores.
+        # Only fall back to neutral 50s if not provided at all.
         if not dna_dimensions:
             dna_dimensions = {
                 "Shape & Occupation": 50, "Build-up": 50, "Chance Creation": 50,

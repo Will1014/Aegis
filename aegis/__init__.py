@@ -51,6 +51,7 @@ from .analysis import (
     MANAGER_DNA_FEATURES,
     STATSBOMB_DNA_FEATURES,
     DNA_PILLARS,
+    PILLAR_PERCENTILE_MAP,
     PILLAR_PLAYER_DEMANDS,
     PLAYER_FIT_FEATURES,
     FIT_THRESHOLDS,
@@ -496,51 +497,141 @@ def run_full_analysis(
     return results
 
 
+def _discover_teams_and_managers(sb_client, competition_ids, season_id):
+    """
+    Discover all teams and their managers from StatsBomb match data.
+    
+    Args:
+        sb_client: StatsBombClient instance
+        competition_ids: List of competition IDs to scan
+        season_id: StatsBomb season ID
+        
+    Returns:
+        Tuple of (team_names: list[str], manager_names: list[str],
+                  team_manager_map: dict[str, str])
+        team_manager_map maps team_name → most-recent manager_name
+    """
+    team_manager_map = {}   # team_name → manager_name
+    
+    for comp_id in competition_ids:
+        matches = sb_client.get_matches(comp_id, season_id)
+        if not matches:
+            continue
+        
+        for match in matches:
+            home = match.get("home_team", {})
+            away = match.get("away_team", {})
+            
+            h_name = (
+                home.get("home_team_name") or home.get("name") or
+                home.get("team_name") or ""
+            )
+            a_name = (
+                away.get("away_team_name") or away.get("name") or
+                away.get("team_name") or ""
+            )
+            
+            def _mgr_name(side):
+                mgrs = side.get("managers")
+                if isinstance(mgrs, list) and mgrs:
+                    m = mgrs[0]
+                    return m.get("name") or m.get("nickname") or "Unknown"
+                if isinstance(mgrs, dict):
+                    return mgrs.get("name") or mgrs.get("nickname") or "Unknown"
+                return "Unknown"
+            
+            if h_name and h_name not in team_manager_map:
+                team_manager_map[h_name] = _mgr_name(home)
+            if a_name and a_name not in team_manager_map:
+                team_manager_map[a_name] = _mgr_name(away)
+    
+    team_names = sorted(team_manager_map.keys())
+    manager_names = sorted(set(team_manager_map.values()) - {"Unknown"})
+    
+    return team_names, manager_names, team_manager_map
+
+
 def run_full_analysis_statsbomb(
-    competition_id: int,
+    target_league_id,
     season_id: int,
-    team_name: str,
-    coach_name: str = None,
+    team_name = "all",
+    coach_name = None,
     username: str = None,
     password: str = None,
     base_dir: str = "/content/aegis_data",
     train_model: bool = True,
-    training_competition_ids: list = None,
+    training_league_ids: list = None,
     visualize: bool = True,
     max_matches: int = 50,
     output_file: str = None
-) -> dict:
+):
     """
-    Run full MTFI analysis using StatsBomb data.
-    
     Run full MTFI analysis using StatsBomb data end-to-end.
     No Sportsmonks dependency.
     
+    Supports single values, lists, or "all" for both team_name and
+    coach_name so you can batch-produce analyses in one call.
+    
     Args:
-        competition_id: StatsBomb competition ID (e.g., 2 for Premier League)
+        target_league_id: The league(s) the target club plays in.
+            Single int (e.g. 2 for Premier League) or list of ints
+            (e.g. [2, 6] to search PL + Eredivisie for cross-league scenarios).
         season_id: StatsBomb season ID (e.g., 317 for 2024/25)
-        team_name: Target club name (e.g., "Chelsea")
-        coach_name: Manager name (recommended, e.g. "Enzo Maresca")
+        team_name: Target club(s). Accepts:
+            - A single string  (e.g. "Chelsea")
+            - A list of strings (e.g. ["Chelsea", "Arsenal"])
+            - "all" — every team in the target league(s) for the season
+        coach_name: Manager(s). Accepts:
+            - A single string  (e.g. "Enzo Maresca")
+            - A list of strings (e.g. ["Enzo Maresca", "Mikel Arteta"])
+            - "all" — every manager discovered in the target league(s)
+            - None — auto-detect the incumbent manager for each team
         username: StatsBomb username (or set SB_USERNAME env var)
         password: StatsBomb password (or set SB_PASSWORD env var)
         base_dir: Base directory for data and outputs
         train_model: Whether to train Manager DNA model (set False after first run)
-        training_competition_ids: List of competition IDs for training.
-                    More = richer clustering. e.g. [2, 3, 6] for PL+Champ+Eredivisie
+        training_league_ids: League IDs for the training set (the pool of
+            managers the model clusters). More leagues = richer clustering.
+            e.g. [2, 3, 6] for PL + Championship + Eredivisie.
+            Defaults to target_league_id if not set.
         visualize: Generate interactive dashboard
         max_matches: Maximum matches to fetch team stats for
+        output_file: Dashboard filename override (only used for single-combo runs)
         
     Returns:
-        Dictionary with analysis results
+        - Single dict when only one (team, coach) combination is run
+        - List of dicts when multiple combinations are run
         
-    Example:
+    Examples:
+        # ── Single scenario (backward-compatible) ──
         results = run_full_analysis_statsbomb(
-            competition_id=2,      # Premier League
-            season_id=282,         # 2024/25
-            team_name="Chelsea",
-            username="you@email.com",
-            password="your_password",
-            train_model=True
+            target_league_id=2, season_id=317,
+            team_name="Chelsea", coach_name="Enzo Maresca"
+        )
+        
+        # ── All teams, incumbent managers ──
+        results = run_full_analysis_statsbomb(
+            target_league_id=2, season_id=317,
+            team_name="all", coach_name=None
+        )
+        
+        # ── One coach at every club ──
+        results = run_full_analysis_statsbomb(
+            target_league_id=2, season_id=317,
+            team_name="all", coach_name="Mikel Arteta"
+        )
+        
+        # ── Every coach at one club ──
+        results = run_full_analysis_statsbomb(
+            target_league_id=2, season_id=317,
+            team_name="Chelsea", coach_name="all"
+        )
+        
+        # ── Explicit lists ──
+        results = run_full_analysis_statsbomb(
+            target_league_id=2, season_id=317,
+            team_name=["Chelsea", "Arsenal"],
+            coach_name=["Enzo Maresca", "Mikel Arteta"]
         )
     """
     import os
@@ -553,7 +644,76 @@ def run_full_analysis_statsbomb(
     Config.set_base_dir(base_dir)
     Config.setup()
     
-    # ── Step 1: Train Manager DNA (StatsBomb) ──
+    # Normalise target_league_id to a list
+    if isinstance(target_league_id, int):
+        target_league_ids = [target_league_id]
+    else:
+        target_league_ids = list(target_league_id)
+    
+    # Primary league is the first in the list (used for squad fetching)
+    primary_league_id = target_league_ids[0]
+    
+    # ── Step 0: Discover teams / managers if "all" requested ──
+    sb_client = StatsBombClient()
+    
+    needs_discovery = (
+        (isinstance(team_name, str) and team_name.lower() == "all") or
+        (isinstance(coach_name, str) and coach_name.lower() == "all")
+    )
+    
+    all_team_names = []
+    all_manager_names = []
+    team_manager_map = {}
+    
+    if needs_discovery:
+        print("\n" + "=" * 60)
+        print("STEP 0: DISCOVERING TEAMS & MANAGERS")
+        print("=" * 60)
+        all_team_names, all_manager_names, team_manager_map = \
+            _discover_teams_and_managers(sb_client, target_league_ids, season_id)
+        print(f"  Found {len(all_team_names)} teams, {len(all_manager_names)} managers")
+        for t in all_team_names:
+            print(f"    • {t:30s}  →  {team_manager_map.get(t, '?')}")
+    
+    # ── Resolve team_name list ──
+    if isinstance(team_name, str) and team_name.lower() == "all":
+        teams_to_run = all_team_names
+    elif isinstance(team_name, list):
+        teams_to_run = list(team_name)
+    else:
+        teams_to_run = [team_name]
+    
+    # ── Resolve coach_name list (per-team if None) ──
+    # "all"  → every discovered manager against every team
+    # list   → each listed manager against every team
+    # str    → that single manager against every team
+    # None   → auto-detect incumbent per team
+    coaches_are_fixed = True   # same coach list for every team?
+    
+    if isinstance(coach_name, str) and coach_name.lower() == "all":
+        coaches_to_run = all_manager_names
+    elif isinstance(coach_name, list):
+        coaches_to_run = list(coach_name)
+    elif isinstance(coach_name, str):
+        coaches_to_run = [coach_name]
+    else:
+        # None → auto-detect per team (handled inside the loop)
+        coaches_to_run = None
+        coaches_are_fixed = False
+    
+    total_combos = len(teams_to_run) * (len(coaches_to_run) if coaches_to_run else 1)
+    is_batch = total_combos > 1
+    
+    if is_batch:
+        coach_desc = (
+            f"{len(coaches_to_run)} managers" if coaches_to_run
+            else "incumbent manager per team"
+        )
+        print(f"\n{'=' * 60}")
+        print(f"BATCH MODE: {len(teams_to_run)} teams × {coach_desc} = {total_combos} analyses")
+        print(f"{'=' * 60}")
+    
+    # ── Step 1: Train Manager DNA (once) ──
     if train_model:
         print("\n" + "=" * 60)
         print("STEP 1: TRAINING MANAGER DNA MODEL (StatsBomb)")
@@ -562,49 +722,122 @@ def run_full_analysis_statsbomb(
         training_dir = Config.PROCESSED_DIR / "training"
         sb_trainer_client = StatsBombClient()
         
+        # training_league_ids defaults to target_league_ids if not explicitly set
+        effective_training_ids = training_league_ids or target_league_ids
+        
         trainer = ManagerDNATrainer(training_dir=training_dir)
         trainer.fetch_manager_data_statsbomb(
             sb_client=sb_trainer_client,
-            competition_id=competition_id,
+            competition_id=primary_league_id,
             season_id=season_id,
-            competition_ids=training_competition_ids
+            competition_ids=effective_training_ids
         )
-        # Note: extract_features() is NOT needed — fetch_manager_data_statsbomb
-        # populates manager_features directly from team match stats
         trainer.fit()
         trainer.save()
     
-    # ── Step 2: Fetch StatsBomb Data ──
-    print("\n" + "=" * 60)
-    print("STEP 2: FETCHING STATSBOMB DATA")
-    print("=" * 60)
+    # ── Step 2+: Loop over each (team, coach) combination ──
+    all_results = []
+    combo_num = 0
     
-    sb_client = StatsBombClient()
-    scenario = sb_client.fetch_scenario(
-        competition_id=competition_id,
-        season_id=season_id,
-        team_name=team_name,
-        max_matches=max_matches
-    )
+    for t_idx, current_team in enumerate(teams_to_run):
+        # Determine coaches to pair with this team
+        if coaches_to_run is not None:
+            team_coaches = coaches_to_run
+        else:
+            # Auto-detect incumbent: use discovery map or let fetch_scenario find it
+            team_coaches = [None]  # sentinel — resolved after fetch_scenario
+        
+        # ── Fetch scenario data for this team (once per team) ──
+        print(f"\n{'=' * 60}")
+        print(f"TEAM {t_idx + 1}/{len(teams_to_run)}: {current_team}")
+        print(f"{'=' * 60}")
+        
+        print(f"\n  Fetching StatsBomb data for {current_team}...")
+        try:
+            scenario = sb_client.fetch_scenario(
+                competition_id=primary_league_id,
+                season_id=season_id,
+                team_name=current_team,
+                max_matches=max_matches
+            )
+        except ValueError as e:
+            print(f"  ⚠ Skipping {current_team}: {e}")
+            continue
+        
+        # ── Run ETL (once per team) ──
+        print(f"\n  Running ETL for {current_team}...")
+        etl = StatsBombETL()
+        manager_dna, squad_profiles = etl.run()
+        
+        # If coach_name was None, resolve the incumbent from scenario data
+        if not coaches_are_fixed and team_coaches == [None]:
+            incumbent = scenario["manager_info"].get("name", "Unknown")
+            team_coaches = [incumbent]
+        
+        # ── Score each coach against this team's squad ──
+        for c_idx, current_coach in enumerate(team_coaches):
+            combo_num += 1
+            manager_name = current_coach or scenario["manager_info"].get("name", "Unknown")
+            
+            if is_batch:
+                print(f"\n  ── Combo {combo_num}/{total_combos}: "
+                      f"{manager_name} → {current_team} ──")
+            else:
+                print(f"\n  Manager: {manager_name}")
+            
+            result = _run_single_statsbomb_analysis(
+                team_name=current_team,
+                manager_name=manager_name,
+                scenario=scenario,
+                manager_dna=manager_dna,
+                squad_profiles=squad_profiles,
+                visualize=visualize,
+                output_file=output_file if not is_batch else None,
+                coach_name_override=current_coach,
+            )
+            
+            if result:
+                all_results.append(result)
     
-    # ── Step 3: Run StatsBomb ETL ──
-    print("\n" + "=" * 60)
-    print("STEP 3: STATSBOMB ETL")
-    print("=" * 60)
+    # ── Summary ──
+    if is_batch:
+        print(f"\n{'=' * 60}")
+        print(f"BATCH COMPLETE: {len(all_results)}/{total_combos} analyses succeeded")
+        print(f"{'=' * 60}")
+        for r in all_results:
+            print(f"  • {r['manager']:25s} → {r['club']:25s}  "
+                  f"Fit: {r['average_fit']:.1f}  "
+                  f"Archetype: {r['archetype']}")
+        return all_results
+    elif all_results:
+        return all_results[0]
+    else:
+        return {}
+
+
+def _run_single_statsbomb_analysis(
+    team_name: str,
+    manager_name: str,
+    scenario: dict,
+    manager_dna: dict,
+    squad_profiles: list,
+    visualize: bool = True,
+    output_file: str = None,
+    coach_name_override: str = None,
+) -> dict:
+    """
+    Run squad-fit analysis + dashboard for a single (team, coach) combo.
     
-    etl = StatsBombETL()
-    manager_dna, squad_profiles = etl.run()
-    
-    # ── Step 4: Squad Fit Analysis ──
-    print("\n" + "=" * 60)
-    print("STEP 4: SQUAD FIT ANALYSIS")
-    print("=" * 60)
-    
+    This is the inner workhorse called by run_full_analysis_statsbomb
+    for each combination.  The model is already trained and data already
+    fetched — this handles Steps 4 & 5 only.
+    """
+    import json
+    import csv as _csv
+    from collections import defaultdict as _dd
+
     analyzer = SquadFitAnalyzer()
     analyzer.load_model()
-    
-    # Use explicit coach_name if provided, otherwise from match data
-    manager_name = coach_name or scenario["manager_info"].get("name", "Unknown")
     
     # Look up the manager in the TRAINING DATA to get their actual tactical profile.
     # This is critical for hypothetical scenarios — "what if Arteta managed Chelsea?"
@@ -614,9 +847,10 @@ def run_full_analysis_statsbomb(
     except ValueError:
         # Manager not in training data — fall back to ETL DNA (target team's profile)
         print(f"  ⚠ '{manager_name}' not in training data, using target team's profile")
-        if coach_name:
-            manager_dna["manager"] = coach_name
-        analyzer.set_target_manager_from_dna(manager_dna)
+        dna_copy = dict(manager_dna)
+        if coach_name_override:
+            dna_copy["manager"] = coach_name_override
+        analyzer.set_target_manager_from_dna(dna_copy)
     analyzer.calculate_fit_scores_from_profiles(
         squad_profiles, 
         club_name=team_name,
@@ -624,11 +858,7 @@ def run_full_analysis_statsbomb(
     )
     analyzer.save()
     
-    # ── Step 4b: Generate recruitment priorities + legacy JSON for visualiser ──
-    import json
-    import csv as _csv
-    from collections import defaultdict as _dd
-    
+    # ── Generate recruitment priorities + legacy JSON for visualiser ──
     position_groups = _dd(list)
     for p in analyzer.squad_fit:
         position_groups[p.position_group].append(p)
@@ -673,27 +903,31 @@ def run_full_analysis_statsbomb(
             "Set Pieces": ps.get("set_pieces", 50),
         }
     else:
-        tp = manager_dna.get("tactical_profile", {})
-        rp = manager_dna.get("results_profile", {})
-        sb = manager_dna.get("statsbomb_enhanced", {})
-        
-        ppda = sb.get("ppda", tp.get("pressing", {}).get("ppda", 10))
-        possession = tp.get("possession", {}).get("avg", 50)
-        pass_acc = tp.get("build_up", {}).get("pass_accuracy", 80)
-        
+        # Fallback: neutral scores (should rarely trigger now that
+        # percentile-based pillar scores are computed in analysis.py)
+        print("  ⚠ No pillar scores available — using neutral 50s for radar chart")
         dna_dimensions = {
-            "Shape & Occupation": min(100, round(possession * 1.2 + rp.get("clean_sheet_pct", 30) * 0.3, 0)),
-            "Build-up": min(100, round(pass_acc, 0)),
-            "Chance Creation": min(100, round(sb.get("np_xg_per_game", rp.get("goals_per_game", 1.5)) * 40, 0)),
-            "Press & Counterpress": min(100, round(max(0, 30 - ppda) * 4, 0)),
-            "Block & Line Height": min(100, round(
-                tp.get("pressing", {}).get("defensive_distance", 40) * 1.5 + 
-                max(0, 2.0 - rp.get("conceded_per_game", 1.2)) * 20, 0)),
-            "Transitions": min(100, round(
-                sb.get("counter_attacking_shots_pg", 1) * 25 + sb.get("high_press_shots_pg", 0) * 20, 0)),
-            "Width & Overloads": min(100, round(sb.get("width_usage", 5) * 10, 0)),
-            "Set Pieces": min(100, round(sb.get("set_piece_emphasis", 20) * 2, 0)),
+            "Shape & Occupation": 50,
+            "Build-up": 50,
+            "Chance Creation": 50,
+            "Press & Counterpress": 50,
+            "Block & Line Height": 50,
+            "Transitions": 50,
+            "Width & Overloads": 50,
+            "Set Pieces": 50,
         }
+    
+    # ── Inject dna_dimensions into squad_fit_summary.json ──
+    # analyzer.save() writes this file BEFORE dna_dimensions is built,
+    # and the visualizer loads it first (ahead of aegis_analysis.json).
+    # Without this injection the radar chart falls back to defaults.
+    summary_path = Config.OUTPUT_DIR / "squad_fit_summary.json"
+    if summary_path.exists():
+        with open(summary_path) as f:
+            summary_data = json.load(f)
+        summary_data["dna_dimensions"] = dna_dimensions
+        with open(summary_path, "w") as f:
+            json.dump(summary_data, f, indent=2)
     
     legacy_results = {
         "manager": analyzer.target_manager or manager_name,
@@ -715,11 +949,9 @@ def run_full_analysis_statsbomb(
     with open(Config.OUTPUT_DIR / "aegis_analysis.json", "w") as f:
         json.dump(legacy_results, f, indent=2)
     
-    # ── Step 5: Visualise ──
+    # ── Visualise ──
     if visualize:
-        print("\n" + "=" * 60)
-        print("STEP 5: GENERATING DASHBOARD")
-        print("=" * 60)
+        print(f"\n  Generating dashboard...")
         try:
             viz = AegisVisualizer()
             viz.load_results()
@@ -733,9 +965,9 @@ def run_full_analysis_statsbomb(
                 dashboard_filename = f"{safe_coach}___{safe_club}.html"
             
             viz.generate_dashboard(filename=dashboard_filename)
-            print(f"\n  ✓ Dashboard: {Config.OUTPUT_DIR / dashboard_filename}")
+            print(f"  ✓ Dashboard: {Config.OUTPUT_DIR / dashboard_filename}")
         except Exception as e:
-            print(f"⚠ Dashboard generation: {e}")
+            print(f"  ⚠ Dashboard generation: {e}")
     
     # Build results dict
     avg_fit = sum(p.fit_score for p in analyzer.squad_fit) / len(analyzer.squad_fit) if analyzer.squad_fit else 0
@@ -757,12 +989,7 @@ def run_full_analysis_statsbomb(
         "manager_dna": manager_dna,
     }
     
-    print("\n" + "=" * 60)
-    print("ANALYSIS COMPLETE (StatsBomb)")
-    print("=" * 60)
-    print(f"Manager: {results['manager']}")
-    print(f"Club: {results['club']}")
-    print(f"Tactical Archetype: {results['archetype']}")
-    print(f"Average Squad Fit: {results['average_fit']:.1f}")
+    print(f"  ✓ {results['manager']} → {results['club']}: "
+          f"Fit {results['average_fit']:.1f}, Archetype: {results['archetype']}")
     
     return results

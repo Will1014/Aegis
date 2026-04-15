@@ -1028,12 +1028,61 @@ class StatsBombETL:
         deep_progs_conceded = avg("team_match_deep_progressions_conceded", 20.0)
         possessions_pg = avg("team_match_possessions", 50)
         
+        # ── NEW: Extended metrics for richer pillar differentiation ──
+        # Shape & Occupation
+        passes_inside_box = avg("team_match_passes_inside_box", 10)
+        obv_defensive = avg("team_match_obv_defensive_action", 0.0)
+        
+        # Build-up
+        gk_pass_distance = avg("team_match_gk_pass_distance", 25.0)
+        gk_long_pass_ratio = avg("team_match_gk_long_pass_ratio", 40.0)
+        obv_pass = avg("team_match_obv_pass", 0.0)
+        successful_passes = avg("team_match_successful_passes", 350)
+        
+        # Chance Creation
+        xg_per_shot = round(np_xg / max(np_shots, 1), 3)
+        op_shot_distance = avg("team_match_op_shot_distance", 18.0)
+        shots_in_clear = avg("team_match_shots_in_clear", 0.5)
+        obv_dribble_carry = avg("team_match_obv_dribble_carry", 0.0)
+        
+        # Press & Counterpress
+        fhalf_pressures_ratio = avg("team_match_fhalf_pressures_ratio", 40.0)
+        aggressive_actions = avg("team_match_aggressive_actions", 40)
+        aggression = avg("team_match_aggression", 0.15)
+        defensive_action_regains = avg("team_match_defensive_action_regains", 15)
+        
+        # Block & Line Height
+        np_xg_per_shot_conceded = avg("team_match_np_xg_per_shot_conceded", 0.10)
+        op_shots_conceded = avg("team_match_op_shots_conceded", 10)
+        passes_inside_box_conceded = avg("team_match_passes_inside_box_conceded", 8)
+        defensive_distance_ppda = avg("team_match_defensive_distance_ppda", 38.0)
+        
+        # Transitions
+        counter_shots_conceded = avg("team_match_counter_attacking_shots_conceded", 1.0)
+        high_press_shots_conceded = avg("team_match_high_press_shots_conceded", 0.5)
+        ball_in_play_time = avg("team_match_ball_in_play_time", 55.0)
+        shots_in_clear_conceded = avg("team_match_shots_in_clear_conceded", 0.5)
+        
+        # Width & Overloads
+        successful_crosses = avg("team_match_successful_crosses_into_box", 2.0)
+        successful_box_cross_ratio = avg("team_match_successful_box_cross_ratio", 20.0)
+        completed_dribbles = avg("team_match_completed_dribbles", 8.0)
+        dribble_ratio = avg("team_match_dribble_ratio", 50.0)
+        
+        # Set Pieces (extended)
+        sp_count = avg("team_match_sp", 10)
+        xg_per_sp = avg("team_match_xg_per_sp", 0.03)
+        sp_shot_ratio = avg("team_match_sp_shot_ratio", 0.2)
+        corner_xg = avg("team_match_corner_xg", 0.15)
+        xg_per_corner = avg("team_match_xg_per_corner", 0.03)
+        xg_per_sp_conceded = avg("team_match_xg_per_sp_conceded", 0.03)
+        sp_shot_ratio_conceded = avg("team_match_sp_shot_ratio_conceded", 0.2)
+        
         # Derived pillar scores
         pressing_intensity = round(max(1, 30 - ppda) * 1.5, 1)
         counterpress_rate = round(counterpressures / max(pressures, 1) * 100, 1)
         total_xg = sp_xg + op_xg
         set_piece_emphasis = round(sp_xg / max(total_xg, 0.01) * 100, 1)
-        xg_per_shot = round(np_xg / max(np_shots, 1), 3)
         
         formation_profile = self._analyse_formations_sb()
         
@@ -1084,16 +1133,89 @@ class StatsBombETL:
                 }
             },
             
-            # Gary's 8-pillar scores (0-100 scale for radar chart)
+            # ── Gary's 8-pillar scores (0-100 scale for radar chart) ──
+            # v3: retuned coefficients for better spread across league tiers.
+            # Compared to v2: boosted build-up (wider GK threshold, lower pass_acc
+            # floor), transitions (floors on rare-event metrics, higher multipliers),
+            # press (regains amplified), width (crossing/dribble uplift).
             "pillar_scores": {
-                "shape_occupation": min(100, round(possession * 1.2 + round(clean_sheets / total_matches * 100, 1) * 0.3, 0)),
-                "build_up": min(100, round(passing_ratio, 0)),
-                "chance_creation": min(100, round(np_xg * 40, 0)),
-                "press_counterpress": min(100, round(max(0, 30 - ppda) * 4, 0)),
-                "block_line_height": min(100, round(defensive_distance * 1.5 + max(0, 2 - round(goals_against / total_matches, 2)) * 20, 0)),
-                "transitions": min(100, round(counter_shots * 25 + high_press_shots * 20, 0)),
-                "width_overloads": min(100, round(crosses_into_box * 10, 0)),
-                "set_pieces": min(100, round(set_piece_emphasis * 2, 0)),
+                # P1 Shape & Occupation
+                "shape_occupation": min(100, round(
+                    min(50, possession * 0.85) +
+                    min(15, passes_inside_box * 0.8) +
+                    min(15, max(0, 1.0 - deep_progs_conceded / 25) * 15) +
+                    min(10, round(clean_sheets / total_matches * 100, 1) * 0.15) +
+                    min(10, max(0, obv_defensive * 20 + 5)),
+                0)),
+
+                # P2 Build-up — widened GK distance window (50m), lowered
+                # pass_acc floor (65), boosted deep progressions multiplier
+                "build_up": min(100, round(
+                    min(35, possession * 0.7) +
+                    min(20, max(0, passing_ratio - 65) * 1.2) +
+                    min(15, max(0, 50 - gk_pass_distance) * 0.4) +
+                    min(15, deep_progressions * 0.7) +
+                    min(10, max(0, obv_pass * 15 + 5)) +
+                    min(5, (100 - round(directness_raw * 100, 1)) * 0.05),
+                0)),
+
+                # P3 Chance Creation
+                "chance_creation": min(100, round(
+                    min(30, np_xg * 18) +
+                    min(25, xg_per_shot * 200) +
+                    min(15, deep_completions * 1.2) +
+                    min(15, shots_in_clear * 15) +
+                    min(15, max(0, obv_dribble_carry * 25 + 5)),
+                0)),
+
+                # P4 Press & Counterpress — boosted regains & aggression
+                "press_counterpress": min(100, round(
+                    min(25, max(0, 30 - ppda) * 1.5) +
+                    min(20, counterpress_rate * 1.2) +
+                    min(20, fhalf_pressures_ratio * 0.4) +
+                    min(15, pressure_regains * 0.7) +
+                    min(10, defensive_action_regains * 0.5) +
+                    min(10, aggression * 65),
+                0)),
+
+                # P5 Block & Line Height — boosted line height contribution
+                "block_line_height": min(100, round(
+                    min(30, defensive_distance * 0.85) +
+                    min(20, max(0, 0.12 - np_xg_per_shot_conceded) * 250) +
+                    min(20, max(0, 15 - passes_inside_box_conceded) * 1.3) +
+                    min(15, max(0, 8 - deep_completions_conceded) * 1.8) +
+                    min(15, max(0, 2.0 - np_xg_conceded) * 10),
+                0)),
+
+                # P6 Transitions — added floor values on rare-event metrics,
+                # boosted pace & ball-in-play, widened defensive threshold
+                "transitions": min(100, round(
+                    min(25, 3 + counter_shots * 16) +
+                    min(20, 2 + high_press_shots * 20) +
+                    min(20, pace_towards_goal * 12) +
+                    min(15, max(0, obv_dribble_carry * 25 + 5)) +
+                    min(10, max(0, 2.5 - counter_shots_conceded) * 5) +
+                    min(10, ball_in_play_time * 0.16),
+                0)),
+
+                # P7 Width & Overloads — boosted crosses & dribble multipliers
+                "width_overloads": min(100, round(
+                    min(25, crosses_into_box * 2.5) +
+                    min(20, successful_crosses * 5.0) +
+                    min(20, successful_box_cross_ratio * 0.6) +
+                    min(20, completed_dribbles * 1.5) +
+                    min(15, dribble_ratio * 0.25),
+                0)),
+
+                # P8 Set Pieces — boosted efficiency multipliers
+                "set_pieces": min(100, round(
+                    min(25, set_piece_emphasis * 0.8) +
+                    min(20, xg_per_sp * 600) +
+                    min(15, sp_shot_ratio * 50) +
+                    min(15, corner_xg * 60) +
+                    min(15, max(0, 0.04 - xg_per_sp_conceded) * 500) +
+                    min(10, sp_xg * 20),
+                0)),
             },
             
             "statsbomb_enhanced": {
@@ -1103,22 +1225,51 @@ class StatsBombETL:
                 "xg_difference": round(np_xg - np_xg_conceded, 2),
                 "xg_per_shot": xg_per_shot,
                 "obv_per_game": obv,
+                "obv_pass_pg": obv_pass,
+                "obv_dribble_carry_pg": obv_dribble_carry,
+                "obv_defensive_action_pg": obv_defensive,
                 "deep_completions_pg": deep_completions,
                 "deep_progressions_pg": deep_progressions,
+                "deep_completions_conceded_pg": deep_completions_conceded,
+                "deep_progressions_conceded_pg": deep_progs_conceded,
                 "pressures_per_game": pressures,
                 "counterpress_rate": counterpress_rate,
                 "pressure_regains_pg": pressure_regains,
+                "counterpressure_regains_pg": counterpressure_regains,
+                "defensive_action_regains_pg": defensive_action_regains,
+                "fhalf_pressures_ratio": fhalf_pressures_ratio,
+                "aggression": aggression,
+                "aggressive_actions_pg": aggressive_actions,
                 "counter_attacking_shots_pg": counter_shots,
+                "counter_attacking_shots_conceded_pg": counter_shots_conceded,
                 "high_press_shots_pg": high_press_shots,
+                "high_press_shots_conceded_pg": high_press_shots_conceded,
+                "shots_in_clear_pg": shots_in_clear,
+                "shots_in_clear_conceded_pg": shots_in_clear_conceded,
                 "directness": round(directness_raw * 100, 1),
                 "pace_towards_goal": pace_towards_goal,
+                "ball_in_play_time": ball_in_play_time,
+                "gk_pass_distance": gk_pass_distance,
+                "gk_long_pass_ratio": gk_long_pass_ratio,
                 "width_usage": crosses_into_box,
+                "successful_crosses_pg": successful_crosses,
                 "box_cross_ratio": box_cross_ratio,
+                "successful_box_cross_ratio": successful_box_cross_ratio,
+                "completed_dribbles_pg": completed_dribbles,
+                "dribble_ratio": dribble_ratio,
+                "passes_inside_box_pg": passes_inside_box,
+                "passes_inside_box_conceded_pg": passes_inside_box_conceded,
                 "set_piece_emphasis": set_piece_emphasis,
                 "sp_xg_pg": sp_xg,
                 "sp_xg_conceded_pg": sp_xg_conceded,
+                "xg_per_sp": xg_per_sp,
+                "sp_shot_ratio": sp_shot_ratio,
+                "corner_xg_pg": corner_xg,
+                "xg_per_corner": xg_per_corner,
+                "xg_per_sp_conceded": xg_per_sp_conceded,
+                "np_xg_per_shot_conceded": np_xg_per_shot_conceded,
                 "defensive_distance": defensive_distance,
-                "deep_completions_conceded_pg": deep_completions_conceded,
+                "defensive_distance_ppda": defensive_distance_ppda,
             }
         }
         
