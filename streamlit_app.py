@@ -383,25 +383,18 @@ def render_radar(dna_a: dict, label_a: str = "Scenario A",
 # ══════════════════════════════════════════════════════════════
 
 def render_metrics(r: dict, color_class: str = "gradient"):
-    """Render the 4 metric cards + classification bar for one scenario."""
+    """Render headline metrics + classification bar for one scenario."""
     avg_fit = r.get("average_fit", 0)
     archetype = r.get("archetype", "—")
     counts = r.get("classification_counts", {})
 
-    mc = st.columns(4)
+    # Two headline cards only — classification bar covers the breakdown
+    mc = st.columns(2)
     with mc[0]:
         st.markdown(metric_card(f"{avg_fit:.1f}", "Average Fit", color_class),
                     unsafe_allow_html=True)
     with mc[1]:
         st.markdown(metric_card(archetype, "Archetype", color_class),
-                    unsafe_allow_html=True)
-    with mc[2]:
-        st.markdown(metric_card(counts.get("Key Enabler", 0),
-                                "Key Enablers", color_class),
-                    unsafe_allow_html=True)
-    with mc[3]:
-        st.markdown(metric_card(counts.get("Potentially Marginalised", 0),
-                                "Marginalised", color_class),
                     unsafe_allow_html=True)
 
     st.write("")
@@ -482,16 +475,31 @@ base_dir = _get_secret("BASE_DIR", _default_base)
 
 def _show_login():
     """Render a branded login screen."""
-    st.markdown("""
+    import base64
+
+    # Load logo from repo if available
+    logo_html = ""
+    logo_path = Path(__file__).parent / "assets" / "logo.png"
+    if logo_path.exists():
+        b64 = base64.b64encode(logo_path.read_bytes()).decode()
+        logo_html = (
+            f'<img src="data:image/png;base64,{b64}" '
+            f'style="max-width:280px; margin-bottom:1.5rem;" />'
+        )
+    else:
+        logo_html = (
+            '<div style="font-family:\'Space Mono\',monospace; font-size:3rem;'
+            ' font-weight:700; margin-bottom:0.5rem;'
+            ' background:linear-gradient(135deg,#38bdf8,#818cf8);'
+            ' -webkit-background-clip:text;'
+            ' -webkit-text-fill-color:transparent;">'
+            '⚽ Aegis MTFI</div>'
+        )
+
+    st.markdown(f"""
     <div style="display:flex; flex-direction:column; align-items:center;
                 justify-content:center; min-height:60vh; text-align:center;">
-        <div style="font-family:'Space Mono',monospace; font-size:3rem;
-                    font-weight:700; margin-bottom:0.5rem;
-                    background:linear-gradient(135deg,#38bdf8,#818cf8);
-                    -webkit-background-clip:text;
-                    -webkit-text-fill-color:transparent;">
-            ⚽ Aegis MTFI
-        </div>
+        {logo_html}
         <div style="color:#64748b; font-size:0.95rem; margin-bottom:2.5rem;
                     letter-spacing:0.08em;">
             Manager Tactical Fit Intelligence
