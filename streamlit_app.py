@@ -768,7 +768,7 @@ def _build_kwargs(scenario_league_id: int, team, coach) -> dict:
 # RUN
 # ══════════════════════════════════════════════════════════════
 
-st.markdown("# Aegis MTFI Dashboard")
+st.markdown("")  # spacer
 
 if run_clicked:
     if not has_creds:
@@ -859,53 +859,29 @@ if results_a is None:
 
 
 if results_b is None:
-    # Single mode
+    # Single mode — the interactive dashboard has everything
     for idx, r in enumerate(results_a):
         manager = r.get("manager", "Unknown")
         club = r.get("club", "Unknown")
 
         if len(results_a) > 1:
-            st.markdown(f"---\n## {manager} → {club}")
-        else:
-            st.markdown(f"## {manager} → {club}")
+            st.divider()
+            st.markdown(f"### {manager} → {club}")
 
-        render_metrics(r)
-        st.write("")
-
-        # DNA Radar
-        analysis = st.session_state.analysis_a
-        dna = analysis.get("dna_dimensions", {})
-        if dna:
-            with st.expander("🧬 Manager DNA Radar"):
-                fig = render_radar(dna, label_a=manager)
-                if fig:
-                    st.pyplot(fig)
-                    plt.close(fig)
-
-        # Squad table
-        render_squad_table(st.session_state.squad_a, key_suffix="_single")
-
-        # Recruitment
-        recruitment = analysis.get("recruitment", [])
-        if recruitment:
-            with st.expander("🎯 Recruitment Priorities"):
-                st.dataframe(pd.DataFrame(recruitment),
-                             use_container_width=True, hide_index=True)
-
-    # Dashboards
     dashboards = st.session_state.dashboards_a
     if dashboards:
-        st.divider()
-        st.markdown("### 📊 Interactive Dashboard")
         if len(dashboards) > 1:
             selected = st.selectbox("Dashboard", list(dashboards.keys()))
         else:
             selected = list(dashboards.keys())[0]
-        with st.expander("Open full dashboard", expanded=False):
-            st.components.v1.html(dashboards[selected], height=900,
-                                  scrolling=True)
-        st.download_button("⬇️  Download HTML", data=dashboards[selected],
+        st.components.v1.html(dashboards[selected], height=900,
+                              scrolling=True)
+        st.download_button("⬇️  Download Dashboard",
+                           data=dashboards[selected],
                            file_name=f"{selected}.html", mime="text/html")
+    else:
+        st.warning("Analysis complete but no dashboard was generated. "
+                   "Enable 'Generate HTML dashboard' in Advanced Options.")
 
 
 # ══════════════════════════════════════════════════════════════
