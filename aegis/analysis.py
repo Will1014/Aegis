@@ -1670,11 +1670,20 @@ class ManagerDNATrainer:
             # Show a sample of the spread
             if pillar_cols:
                 print(f"  Pillar score ranges across {len(self.df_managers)} managers:")
+                all_degenerate = True
                 for col in pillar_cols:
                     pname = col.replace("pillar_pct_", "")
                     lo = self.df_managers[col].min()
                     hi = self.df_managers[col].max()
-                    print(f"    {pname:25s}  {lo:3.0f} – {hi:3.0f}")
+                    spread = hi - lo
+                    if spread > 5:
+                        all_degenerate = False
+                    print(f"    {pname:25s}  {lo:3.0f} – {hi:3.0f}  (spread {spread:.0f})")
+                
+                if all_degenerate:
+                    print("  ⚠ WARNING: All pillar scores are degenerate (spread ≤5).")
+                    print("    This usually means team_match_stats returned no data.")
+                    print("    Pillar columns marked invalid — fallback will use ETL scores.")
 
     def save(self, verbose: bool = True) -> "ManagerDNATrainer":
         """Save model and data to files."""
@@ -2009,7 +2018,7 @@ class SquadFitAnalyzer:
             "interceptions": tp.get("pressing", {}).get("intensity", {}).get("avg", 20.0) * 0.4,
             "clean_sheet_pct": rp.get("clean_sheet_pct", 30.0),
             "win_rate": rp.get("win_rate", 33.0),
-            # StatsBomb 8-pillar features
+            # StatsBomb 8-pillar features (basic)
             "pressing_intensity": max(0, 30 - sb.get("ppda", tp.get("pressing", {}).get("ppda", 10))),
             "counterpress_rate": round(
                 sb.get("pressures_per_game", 0) and 
@@ -2021,12 +2030,41 @@ class SquadFitAnalyzer:
             "chance_quality": round(
                 sb.get("np_xg_per_game", tp.get("attacking", {}).get("np_xg_pg", 1.5)) / 
                 max(tp.get("attacking", {}).get("shots_pg", 12), 1), 3),
-            "defensive_line_height": tp.get("pressing", {}).get("defensive_distance", 40),
+            "defensive_line_height": sb.get("defensive_distance",
+                                            tp.get("pressing", {}).get("defensive_distance", 40)),
             "width_usage": sb.get("width_usage", 5),
             "set_piece_emphasis": sb.get("set_piece_emphasis", 20),
             "transition_threat": sb.get("counter_attacking_shots_pg", 
                                        tp.get("attacking", {}).get("counter_attacking_shots_pg", 1.0)),
             "defensive_solidity": round(max(0, 3.0 - rp.get("conceded_per_game", 1.2)) * 33.3, 1),
+            # ── Full PILLAR_PERCENTILE_MAP feature set from statsbomb_enhanced ──
+            # These are the exact keys used by PILLAR_PERCENTILE_MAP; without them
+            # the on-the-fly pillar computation can only use 1–2 features per pillar
+            # (regression-to-mean → all pillars identical).
+            "passes_inside_box":           sb.get("passes_inside_box_pg", 10.0),
+            "obv_defensive_action":        sb.get("obv_defensive_action_pg", 0.0),
+            "gk_pass_distance":            sb.get("gk_pass_distance", 25.0),
+            "deep_progressions":           sb.get("deep_progressions_pg", 20.0),
+            "obv_pass":                    sb.get("obv_pass_pg", 0.0),
+            "np_xg":                       sb.get("np_xg_per_game", 1.5),
+            "deep_completions":            sb.get("deep_completions_pg", 5.0),
+            "shots_in_clear":              sb.get("shots_in_clear_pg", 0.5),
+            "obv_dribble_carry":           sb.get("obv_dribble_carry_pg", 0.0),
+            "fhalf_pressures_ratio":       sb.get("fhalf_pressures_ratio", 40.0),
+            "pressure_regains":            sb.get("pressure_regains_pg", 20.0),
+            "aggression":                  sb.get("aggression", 0.15),
+            "np_xg_per_shot_conceded":     sb.get("np_xg_per_shot_conceded", 0.10),
+            "passes_inside_box_conceded":  sb.get("passes_inside_box_conceded_pg", 8.0),
+            "deep_completions_conceded":   sb.get("deep_completions_conceded_pg", 5.0),
+            "high_press_shots":            sb.get("high_press_shots_pg", 0.5),
+            "pace_towards_goal":           sb.get("pace_towards_goal", 1.0),
+            "counter_shots_conceded":      sb.get("counter_attacking_shots_conceded_pg", 1.0),
+            "successful_crosses":          sb.get("successful_crosses_pg", 2.0),
+            "completed_dribbles":          sb.get("completed_dribbles_pg", 8.0),
+            "dribble_ratio":               sb.get("dribble_ratio", 50.0),
+            "xg_per_sp":                   sb.get("xg_per_sp", 0.03),
+            "sp_shot_ratio":               sb.get("sp_shot_ratio", 0.2),
+            "corner_xg":                   sb.get("corner_xg_pg", 0.15),
         }
         
         if self.model and self.model.get("scaler") and self.model.get("kmeans"):

@@ -897,6 +897,22 @@ def _run_single_statsbomb_analysis(
     # (correct for hypothetical scenarios), fall back to ETL DNA
     if analyzer.manager_pillar_scores:
         ps = analyzer.manager_pillar_scores
+        score_vals = list(ps.values())
+        
+        # Detect degenerate scores: all pillars within 5 points of each other
+        # This means the training data had no variance (all-default feature values)
+        is_degenerate = len(score_vals) > 0 and (max(score_vals) - min(score_vals)) <= 5
+        
+        if is_degenerate:
+            print("  ⚠ Training-based pillar scores are degenerate — using ETL pillar scores")
+            etl_scores = manager_dna.get("pillar_scores", {})
+            if etl_scores and len(set(etl_scores.values())) > 1:
+                # ETL scores have real variance — use them directly
+                ps = etl_scores
+            else:
+                # Both degenerate — use neutral scores and warn
+                print("  ⚠ ETL pillar scores also degenerate — radar will show neutral values")
+
         dna_dimensions = {
             "Shape & Occupation": ps.get("shape_occupation", 50),
             "Build-up": ps.get("build_up", 50),
