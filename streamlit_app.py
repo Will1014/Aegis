@@ -732,8 +732,9 @@ with st.sidebar:
                 try:
                     os.environ["SB_USERNAME"] = sb_user
                     os.environ["SB_PASSWORD"] = sb_pass
-                    from aegis import StatsBombClient
+                    from aegis import StatsBombClient, Config
                     from aegis.player_dossier import PlayerDossierGenerator, MIN_MINUTES
+                    Config.set_base_dir(base_dir)
                     sb = StatsBombClient()
                     _stats = sb.get_player_season_stats(d_league_id, season_id)
                     gen = PlayerDossierGenerator(_stats)
