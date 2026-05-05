@@ -61,6 +61,7 @@ from .analysis import (
     AegisAnalyzer,
 )
 from .visualizations import AegisVisualizer
+from .player_dossier import PlayerDossierGenerator, generate_player_dossier
 
 __all__ = [
     # Config & Clients
@@ -90,6 +91,10 @@ __all__ = [
     
     # Visualization
     "AegisVisualizer",
+    
+    # Player Dossier
+    "PlayerDossierGenerator",
+    "generate_player_dossier",
     
     # Convenience functions
     "run_full_analysis",
@@ -916,18 +921,6 @@ def _run_single_statsbomb_analysis(
             "Width & Overloads": 50,
             "Set Pieces": 50,
         }
-    
-    # ── Inject dna_dimensions into squad_fit_summary.json ──
-    # analyzer.save() writes this file BEFORE dna_dimensions is built,
-    # and the visualizer loads it first (ahead of aegis_analysis.json).
-    # Without this injection the radar chart falls back to defaults.
-    summary_path = Config.OUTPUT_DIR / "squad_fit_summary.json"
-    if summary_path.exists():
-        with open(summary_path) as f:
-            summary_data = json.load(f)
-        summary_data["dna_dimensions"] = dna_dimensions
-        with open(summary_path, "w") as f:
-            json.dump(summary_data, f, indent=2)
     
     legacy_results = {
         "manager": analyzer.target_manager or manager_name,

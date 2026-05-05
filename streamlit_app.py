@@ -436,6 +436,8 @@ for key, default in [
     ("analysis_a", {}), ("analysis_b", {}),
     ("squad_a", None), ("squad_b", None),
     ("authenticated", False),
+    ("dossier_html", None), ("dossier_player", ""),
+    ("dossier_player_list", []),
 ]:
     if key not in st.session_state:
         st.session_state[key] = default
@@ -622,9 +624,10 @@ with st.sidebar:
     st.divider()
 
     # ── Mode toggle ──
-    mode = st.radio("Mode", ["Single Analysis", "Compare Scenarios"],
-                    horizontal=True, label_visibility="collapsed")
+    mode = st.radio("Mode", ["Single Analysis", "Compare Scenarios", "Player Dossier"],
+                    horizontal=False, label_visibility="collapsed")
     is_compare = mode == "Compare Scenarios"
+    is_dossier = mode == "Player Dossier"
 
     st.divider()
 
@@ -715,7 +718,51 @@ with st.sidebar:
         return s_league_id, s_team, s_coach
 
     # ── Render scenario inputs ──
-    if is_compare:
+    if is_dossier:
+        st.markdown("**Player Scouting Dossier**")
+        d_league = st.selectbox(
+            "League", list(COMPETITION_OPTIONS.keys()), key="d_league")
+        d_league_id = COMPETITION_OPTIONS[d_league]
+
+        # Load player list for selected league/season
+        player_list = st.session_state.dossier_player_list
+        if has_creds and st.button("🔍  Load Players", key="d_load",
+                                   use_container_width=True):
+            with st.spinner("Loading player list…"):
+                try:
+                    os.environ["SB_USERNAME"] = sb_user
+                    os.environ["SB_PASSWORD"] = sb_pass
+                    from aegis import StatsBombClient
+                    from aegis.player_dossier import PlayerDossierGenerator, MIN_MINUTES
+                    sb = StatsBombClient()
+                    _stats = sb.get_player_season_stats(d_league_id, season_id)
+                    gen = PlayerDossierGenerator(_stats)
+                    player_list = gen.list_players(min_minutes=MIN_MINUTES)
+                    st.session_state.dossier_player_list = player_list
+                    st.success(f"✓ {len(player_list)} players loaded")
+                except Exception as exc:
+                    st.error(f"Could not load players: {exc}")
+
+        if player_list:
+            d_player = st.selectbox("Player", player_list, key="d_player_select")
+        else:
+            d_player = st.text_input("Player name", key="d_player_text",
+                                     placeholder="e.g. Tae-Seok Lee")
+
+        # Optional manual overrides
+        with st.expander("📝  Manual Overrides (optional)"):
+            d_height   = st.text_input("Height (e.g. 1.74 m)", key="d_height")
+            d_foot     = st.selectbox("Strong foot", ["", "Left", "Right", "Both"], key="d_foot")
+            d_tmv      = st.text_input("TMV (e.g. €1.5M)", key="d_tmv")
+            d_contract = st.text_input("Contract expiry (e.g. Jun 2029)", key="d_contract")
+            d_nat      = st.text_input("Nationality", key="d_nat")
+            d_pos_raw  = st.text_input("Positions (comma-separated, e.g. LB,LWB,LM)",
+                                       key="d_pos")
+
+        dossier_clicked = st.button("⚽  Generate Dossier", use_container_width=True,
+                                    type="primary", key="d_run")
+
+    elif is_compare:
         league_id_a, team_a, coach_a = _scenario_inputs(
             "Scenario A", "a", "scenario-a")
         st.write("")
@@ -731,10 +778,13 @@ with st.sidebar:
 
     st.divider()
 
-    run_clicked = st.button("🚀  Run Analysis", use_container_width=True,
-                            type="primary")
+    if not is_dossier:
+        run_clicked = st.button("🚀  Run Analysis", use_container_width=True,
+                                type="primary")
+    else:
+        run_clicked = False
 
-    if st.button("🗑️  Clear Cache", use_container_width=True):
+    if not is_dossier and st.button("🗑️  Clear Cache", use_container_width=True):
         _run_cached.clear()
         discover_teams_and_managers.clear()
         st.toast("Cache cleared — next run will fetch fresh data.")
@@ -769,6 +819,96 @@ def _build_kwargs(scenario_league_id: int, team, coach) -> dict:
 # ══════════════════════════════════════════════════════════════
 
 st.markdown("")  # spacer
+
+# ══════════════════════════════════════════════════════════════
+# PLAYER DOSSIER MODE
+# ══════════════════════════════════════════════════════════════
+
+if is_dossier:
+    if "dossier_clicked" in dir() and dossier_clicked:  # noqa: F821
+        pass  # fall through to generation below
+
+    # Resolve player name from whichever input was used
+    _d_player = (
+        st.session_state.get("d_player_select", "")
+        or st.session_state.get("d_player_text", "")
+    )
+    _d_league_id = COMPETITION_OPTIONS.get(
+        st.session_state.get("d_league", list(COMPETITION_OPTIONS.keys())[0]), 2)
+
+    # Check if generate was clicked this run
+    _dossier_trigger = st.session_state.get("d_run", False)
+
+    if _dossier_trigger and _d_player and has_creds:
+        with st.spinner(f"Generating dossier for {_d_player}…"):
+            try:
+                os.environ["SB_USERNAME"] = sb_user
+                os.environ["SB_PASSWORD"] = sb_pass
+                from aegis import StatsBombClient
+                from aegis.player_dossier import PlayerDossierGenerator, MIN_MINUTES
+                from aegis import Config
+                Config.set_base_dir(base_dir)
+
+                sb = StatsBombClient()
+                _stats = sb.get_player_season_stats(_d_league_id, season_id)
+
+                # Build overrides from sidebar inputs
+                _overrides = {}
+                _d_h = st.session_state.get("d_height", "")
+                _d_f = st.session_state.get("d_foot", "")
+                _d_t = st.session_state.get("d_tmv", "")
+                _d_c = st.session_state.get("d_contract", "")
+                _d_n = st.session_state.get("d_nat", "")
+                _d_p = st.session_state.get("d_pos", "")
+                if _d_h: _overrides["height"] = _d_h
+                if _d_f: _overrides["strong_foot"] = _d_f
+                if _d_t: _overrides["tmv"] = _d_t
+                if _d_c: _overrides["contract_exp"] = _d_c
+                if _d_n: _overrides["nationality"] = _d_n
+                if _d_p:
+                    _overrides["positions"] = [p.strip() for p in _d_p.split(",") if p.strip()]
+
+                # Competition display name
+                _comp_name = st.session_state.get("d_league", "")
+                _season_name = season_label
+
+                gen = PlayerDossierGenerator(_stats, output_dir=Path(base_dir) / "outputs")
+                html = gen.generate(
+                    player_name=_d_player,
+                    competition_name=f"{_comp_name} {_season_name}",
+                    season_name=_season_name,
+                    manual_overrides=_overrides,
+                )
+                st.session_state.dossier_html = html
+                st.session_state.dossier_player = _d_player
+            except Exception as exc:
+                st.error(f"Dossier generation failed: {exc}")
+
+    elif _dossier_trigger and not _d_player:
+        st.warning("Enter or select a player name first.")
+    elif _dossier_trigger and not has_creds:
+        st.error("StatsBomb credentials not configured.")
+
+    # ── Render dossier ──
+    dossier_html = st.session_state.get("dossier_html")
+    if dossier_html:
+        player_label = st.session_state.get("dossier_player", "Player")
+        col1, col2 = st.columns([3, 1])
+        with col1:
+            st.markdown(f"### 📋 {player_label} — Scouting Dossier")
+        with col2:
+            st.download_button(
+                "⬇️  Download Dossier",
+                data=dossier_html,
+                file_name=f"{player_label.replace(' ', '_')}___Scouting_Dossier.html",
+                mime="text/html",
+            )
+        st.components.v1.html(dossier_html, height=1400, scrolling=True)
+    elif not _dossier_trigger:
+        st.info("Select a league and season, load players, then choose a player and press **Generate Dossier**.")
+
+    st.stop()
+
 
 if run_clicked:
     if not has_creds:
