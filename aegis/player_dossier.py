@@ -46,45 +46,58 @@ from typing import Any, Dict, List, Optional, Tuple
 # =============================================================================
 
 # StatsBomb field name aliases: (preferred, *fallbacks)
+# Real StatsBomb Player Season Stats v4 fields are prefixed `player_season_`
 _FIELD_MAP: Dict[str, Tuple[str, ...]] = {
     # Identity
-    "player_name":       ("player_name", "player.name", "name"),
+    "player_name":       ("player_name", "name"),
     "team_name":         ("team_name",   "team.name",   "team"),
     "player_id":         ("player_id",   "player.id",   "id"),
     "team_id":           ("team_id",     "team.id"),
     "nationality":       ("player_nationality", "nationality", "country"),
     "position":          ("primary_position", "position", "positions"),
     "birth_date":        ("birth_date",  "dob", "date_of_birth"),
-    # Season totals
-    "minutes":           ("minutes_played", "minutes", "mins"),
-    "matches":           ("matches_played", "matches", "apps", "appearances"),
-    "goals":             ("goals", "total_goals"),
-    "assists":           ("assists", "total_assists"),
+    # Season totals  ← StatsBomb uses player_season_minutes, not minutes_played
+    "minutes":           ("player_season_minutes", "minutes_played", "minutes", "mins"),
+    "matches":           ("player_season_appearances", "matches_played", "matches", "apps"),
+    # Goals & assists — StatsBomb stores these as per-90 only, so multiply later
+    # We expose season totals by deriving from *_90 * nineties in _compute_metrics
+    "goals":             ("player_season_goals",    "goals"),
+    "assists":           ("player_season_assists",  "assists"),
     # Per-90 attacking
-    "xa_p90":            ("xa_per_90", "expected_assists_per_90", "xassists_per_90", "key_passes_per_90"),
-    "shots_p90":         ("shots_per_90", "total_shots_per_90"),
-    "chances_p90":       ("shot_creating_actions_per_90", "key_passes_per_90", "chance_created_per_90"),
-    "long_balls_p90":    ("passes_long_per_90", "long_balls_per_90", "long_passes_per_90"),
+    "xa_p90":            ("player_season_xa_90",            "xa_per_90", "xassists_per_90"),
+    "shots_p90":         ("player_season_np_shots_90",      "shots_per_90", "total_shots_per_90"),
+    "chances_p90":       ("player_season_key_passes_90",    "key_passes_per_90", "chance_created_per_90"),
+    "long_balls_p90":    ("player_season_long_balls_90",    "player_season_passes_long_90",
+                          "passes_long_per_90", "long_balls_per_90"),
     # Crossing
-    "crosses_succ_p90":  ("successful_crosses_per_90", "crosses_into_box_per_90", "accurate_crosses_per_90"),
-    "crosses_att_p90":   ("crosses_per_90", "crosses_attempted_per_90", "total_crosses_per_90"),
-    "cross_pct":         ("cross_accuracy", "cross_success_rate", "crossing_accuracy", "cross_percentage"),
+    "crosses_succ_p90":  ("player_season_successful_crosses_90", "player_season_crosses_90",
+                          "successful_crosses_per_90"),
+    "crosses_att_p90":   ("player_season_crosses_into_box_90", "player_season_crosses_90",
+                          "crosses_per_90"),
+    "cross_pct":         ("player_season_cross_accuracy",   "cross_accuracy",
+                          "cross_success_rate", "crossing_accuracy"),
     # Dribbling
-    "dribbles_succ_p90": ("successful_dribbles_per_90", "dribbles_completed_per_90", "dribbles_per_90"),
-    "dribbles_att_p90":  ("dribbles_attempted_per_90", "dribbles_total_per_90"),
-    "dribble_pct":       ("dribble_percentage", "dribble_success_rate", "dribble_accuracy"),
+    "dribbles_succ_p90": ("player_season_dribbles_90",      "dribbles_completed_per_90",
+                          "successful_dribbles_per_90"),
+    "dribbles_att_p90":  ("player_season_dribbles_attempted_90", "dribbles_attempted_per_90"),
+    "dribble_pct":       ("player_season_dribble_success_rate", "player_season_challenge_ratio",
+                          "dribble_percentage", "dribble_success_rate"),
     # Duels
-    "duels_won_p90":     ("duels_won_per_90", "ground_duels_won_per_90"),
-    "duels_att_p90":     ("duels_per_90", "ground_duels_per_90", "total_duels_per_90"),
-    "duels_won_pct":     ("duels_won_percentage", "duel_success_rate", "duels_percentage"),
+    "duels_won_p90":     ("player_season_ground_duels_won_90", "player_season_duels_won_90",
+                          "duels_won_per_90"),
+    "duels_att_p90":     ("player_season_ground_duels_90",  "player_season_duels_90",
+                          "duels_per_90"),
+    "duels_won_pct":     ("player_season_ground_duel_win_rate", "player_season_duel_success_rate",
+                          "duels_won_percentage"),
     # Defensive
-    "tackles_p90":       ("tackles_per_90", "tackles_won_per_90"),
-    "interceptions_p90": ("interceptions_per_90",),
-    "recoveries_p90":    ("ball_recoveries_per_90", "recoveries_per_90", "ball_recovery_per_90"),
-    "clearances_p90":    ("clearances_per_90",),
-    "pressures_p90":     ("pressures_per_90",),
+    "tackles_p90":       ("player_season_tackles_90",        "tackles_per_90"),
+    "interceptions_p90": ("player_season_interceptions_90",  "interceptions_per_90"),
+    "recoveries_p90":    ("player_season_ball_recoveries_90","player_season_recoveries_90",
+                          "ball_recoveries_per_90", "recoveries_per_90"),
+    "clearances_p90":    ("player_season_clearance_90",      "clearances_per_90"),
+    "pressures_p90":     ("player_season_pressures_90",      "pressures_per_90"),
     # OBV
-    "obv_p90":           ("obv_per_90", "on_ball_value_per_90"),
+    "obv_p90":           ("player_season_obv_90",            "on_ball_value_per_90"),
 }
 
 # Position group mapping (StatsBomb position IDs)
@@ -360,6 +373,15 @@ class PlayerDossierGenerator:
             raw = _get(record, key)
             metrics[key] = _safe_float(raw, 0.0)
 
+        # Goals & assists: StatsBomb only stores per-90 values, so derive totals
+        # Try direct field first, then multiply per-90 by nineties
+        if metrics["goals"] == 0:
+            goals_90 = _safe_float(record.get("player_season_goals_90"), 0)
+            metrics["goals"] = round(goals_90 * nineties)
+        if metrics["assists"] == 0:
+            assists_90 = _safe_float(record.get("player_season_assists_90"), 0)
+            metrics["assists"] = round(assists_90 * nineties)
+
         # Derived percentages if raw counts available but pct missing
         if metrics["cross_pct"] == 0:
             att = metrics["crosses_att_p90"]
@@ -367,17 +389,27 @@ class PlayerDossierGenerator:
             if att > 0:
                 metrics["cross_pct"] = round(succ / att * 100, 1)
 
+        # Dribble % — StatsBomb stores challenge_ratio (successful / attempted)
         if metrics["dribble_pct"] == 0:
-            att = _safe_float(_get(record, "dribbles_att_p90"), 0)
-            succ = metrics["dribbles_succ_p90"]
-            if att > 0:
-                metrics["dribble_pct"] = round(succ / att * 100, 1)
+            cr = _safe_float(record.get("player_season_challenge_ratio"), 0)
+            if cr > 0:
+                metrics["dribble_pct"] = round(cr * 100, 1)
+            else:
+                att = _safe_float(_get(record, "dribbles_att_p90"), 0)
+                succ = metrics["dribbles_succ_p90"]
+                if att > 0:
+                    metrics["dribble_pct"] = round(succ / att * 100, 1)
 
+        # Duels won % — StatsBomb stores aerial_ratio; try ground_duel_win_rate
         if metrics["duels_won_pct"] == 0:
-            att = metrics["duels_att_p90"]
-            won = metrics["duels_won_p90"]
-            if att > 0:
-                metrics["duels_won_pct"] = round(won / att * 100, 1)
+            win_rate = _safe_float(record.get("player_season_ground_duel_win_rate"), 0)
+            if win_rate > 0:
+                metrics["duels_won_pct"] = round(win_rate * 100, 1)
+            else:
+                att = metrics["duels_att_p90"]
+                won = metrics["duels_won_p90"]
+                if att > 0:
+                    metrics["duels_won_pct"] = round(won / att * 100, 1)
 
         if pid:
             self._metric_cache[pid] = metrics
