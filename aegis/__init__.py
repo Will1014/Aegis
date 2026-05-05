@@ -958,6 +958,21 @@ def _run_single_statsbomb_analysis(
     with open(Config.OUTPUT_DIR / "aegis_analysis.json", "w") as f:
         json.dump(legacy_results, f, indent=2)
     
+    # Inject dna_dimensions into squad_fit_summary.json so generate_dashboard
+    # can find it even without going through load_results() / aegis_analysis.json.
+    # squad_fit_summary.json is written by analyzer.save() before dna_dimensions
+    # is built, so it needs to be patched here.
+    summary_path = Config.OUTPUT_DIR / "squad_fit_summary.json"
+    if summary_path.exists():
+        try:
+            with open(summary_path) as f:
+                _summary = json.load(f)
+            _summary["dna_dimensions"] = dna_dimensions
+            with open(summary_path, "w") as f:
+                json.dump(_summary, f, indent=2)
+        except Exception:
+            pass  # non-fatal; visualizer will fall back to aegis_analysis.json
+    
     # ── Visualise ──
     if visualize:
         print(f"\n  Generating dashboard...")

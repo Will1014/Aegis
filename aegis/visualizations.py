@@ -175,10 +175,15 @@ class AegisVisualizer:
         
         # Extract 8-pillar DNA dimensions from summary JSON
         dna_dimensions = summary.get("dna_dimensions", {})
+        # Fall back to viz.results (loaded from aegis_analysis.json by load_results())
+        # squad_fit_summary.json never contains dna_dimensions — it's written before
+        # dna_dimensions is computed in _run_single_statsbomb_analysis.
+        if not dna_dimensions and self.results:
+            dna_dimensions = self.results.get("dna_dimensions", {})
         if dna_dimensions:
             print(f"  ✓ Loaded 8-pillar DNA dimensions ({len(dna_dimensions)} pillars)")
         else:
-            print(f"  ⚠ No dna_dimensions in summary JSON — radar will use defaults")
+            print(f"  ⚠ No dna_dimensions found — radar will use defaults")
         
         # Generate HTML
         print("\n[3/3] Generating HTML...")
