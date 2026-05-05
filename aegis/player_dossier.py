@@ -46,58 +46,41 @@ from typing import Any, Dict, List, Optional, Tuple
 # =============================================================================
 
 # StatsBomb field name aliases: (preferred, *fallbacks)
-# Real StatsBomb Player Season Stats v4 fields are prefixed `player_season_`
+# Source of truth: API_Player_Season_Stats_v4_0_0 spec (confirmed fields)
 _FIELD_MAP: Dict[str, Tuple[str, ...]] = {
     # Identity
-    "player_name":       ("player_name", "name"),
-    "team_name":         ("team_name",   "team.name",   "team"),
-    "player_id":         ("player_id",   "player.id",   "id"),
-    "team_id":           ("team_id",     "team.id"),
-    "nationality":       ("player_nationality", "nationality", "country"),
-    "position":          ("primary_position", "position", "positions"),
-    "birth_date":        ("birth_date",  "dob", "date_of_birth"),
-    # Season totals  ← StatsBomb uses player_season_minutes, not minutes_played
-    "minutes":           ("player_season_minutes", "minutes_played", "minutes", "mins"),
-    "matches":           ("player_season_appearances", "matches_played", "matches", "apps"),
-    # Goals & assists — StatsBomb stores these as per-90 only, so multiply later
-    # We expose season totals by deriving from *_90 * nineties in _compute_metrics
-    "goals":             ("player_season_goals",    "goals"),
-    "assists":           ("player_season_assists",  "assists"),
-    # Per-90 attacking
-    "xa_p90":            ("player_season_xa_90",            "xa_per_90", "xassists_per_90"),
-    "shots_p90":         ("player_season_np_shots_90",      "shots_per_90", "total_shots_per_90"),
-    "chances_p90":       ("player_season_key_passes_90",    "key_passes_per_90", "chance_created_per_90"),
-    "long_balls_p90":    ("player_season_long_balls_90",    "player_season_passes_long_90",
-                          "passes_long_per_90", "long_balls_per_90"),
-    # Crossing
-    "crosses_succ_p90":  ("player_season_successful_crosses_90", "player_season_crosses_90",
-                          "successful_crosses_per_90"),
-    "crosses_att_p90":   ("player_season_crosses_into_box_90", "player_season_crosses_90",
-                          "crosses_per_90"),
-    "cross_pct":         ("player_season_cross_accuracy",   "cross_accuracy",
-                          "cross_success_rate", "crossing_accuracy"),
-    # Dribbling
-    "dribbles_succ_p90": ("player_season_dribbles_90",      "dribbles_completed_per_90",
-                          "successful_dribbles_per_90"),
-    "dribbles_att_p90":  ("player_season_dribbles_attempted_90", "dribbles_attempted_per_90"),
-    "dribble_pct":       ("player_season_dribble_success_rate", "player_season_challenge_ratio",
-                          "dribble_percentage", "dribble_success_rate"),
-    # Duels
-    "duels_won_p90":     ("player_season_ground_duels_won_90", "player_season_duels_won_90",
-                          "duels_won_per_90"),
-    "duels_att_p90":     ("player_season_ground_duels_90",  "player_season_duels_90",
-                          "duels_per_90"),
-    "duels_won_pct":     ("player_season_ground_duel_win_rate", "player_season_duel_success_rate",
-                          "duels_won_percentage"),
-    # Defensive
-    "tackles_p90":       ("player_season_tackles_90",        "tackles_per_90"),
-    "interceptions_p90": ("player_season_interceptions_90",  "interceptions_per_90"),
-    "recoveries_p90":    ("player_season_ball_recoveries_90","player_season_recoveries_90",
-                          "ball_recoveries_per_90", "recoveries_per_90"),
-    "clearances_p90":    ("player_season_clearance_90",      "clearances_per_90"),
-    "pressures_p90":     ("player_season_pressures_90",      "pressures_per_90"),
-    # OBV
-    "obv_p90":           ("player_season_obv_90",            "on_ball_value_per_90"),
+    "player_name":       ("player_name",),
+    "team_name":         ("team_name",),
+    "player_id":         ("player_id",),
+    "team_id":           ("team_id",),
+    "nationality":       ("player_nationality", "nationality"),
+    "position":          ("primary_position", "position"),
+    "birth_date":        ("birth_date",),
+    "height":            ("player_height",),                          # cm, confirmed in spec
+    # Season totals
+    "minutes":           ("player_season_minutes",),
+    "matches":           ("player_season_appearances",),
+    # Per-90 — all confirmed in Player Season Stats v4 spec
+    "goals_90":          ("player_season_goals_90",),
+    "assists_90":        ("player_season_assists_90",),
+    "xa_p90":            ("player_season_xa_90",),
+    "np_xg_p90":         ("player_season_np_xg_90",),
+    "shots_p90":         ("player_season_np_shots_90",),
+    "chances_p90":       ("player_season_key_passes_90",),
+    "long_balls_p90":    ("player_season_long_balls_90",),            # confirmed
+    "crosses_p90":       ("player_season_crosses_90",),               # completed crosses, confirmed
+    "cross_pct":         ("player_season_crossing_ratio",),           # confirmed
+    "dribbles_p90":      ("player_season_dribbles_90",),              # successful dribbles, confirmed
+    "dribble_pct":       ("player_season_dribble_ratio",),            # confirmed (NOT challenge_ratio)
+    "recoveries_p90":    ("player_season_ball_recoveries_90",),       # confirmed
+    "aerial_ratio":      ("player_season_aerial_ratio",),             # % aerial duels won, confirmed
+    "obv_p90":           ("player_season_obv_90",),
+    "pressures_p90":     ("player_season_pressures_90",),
+    "tackles_p90":       ("player_season_tackles_90",),
+    "interceptions_p90": ("player_season_interceptions_90",),
+    "clearances_p90":    ("player_season_clearance_90",),
+    "pass_acc":          ("player_season_passing_ratio",),
+    "deep_prog_p90":     ("player_season_deep_progressions_90",),
 }
 
 # Position group mapping (StatsBomb position IDs)
@@ -118,40 +101,41 @@ _POSITION_LABELS: Dict[int, str] = {
 }
 
 # Metric display definitions: (key, label, category, higher_is_better)
-# Categories: "attacking", "distribution", "defensive"
+# All confirmed present in StatsBomb Player Season Stats v4 spec
 DOSSIER_METRICS: List[Tuple[str, str, str, bool]] = [
-    ("goals",           "Goals",              "attacking",     True),
-    ("assists",         "Assists",            "attacking",     True),
-    ("xa_p90",          "xA / 90",            "attacking",     True),
-    ("shots_p90",       "Shots / 90",         "attacking",     True),
-    ("chances_p90",     "Chances / 90",       "attacking",     True),
-    ("long_balls_p90",  "Long Balls / 90",    "distribution",  True),
-    ("crosses_succ_p90","Succ. Crosses / 90", "distribution",  True),
-    ("cross_pct",       "Cross Success %",    "distribution",  True),
-    ("dribbles_succ_p90","Succ. Dribbles / 90","distribution", True),
-    ("dribble_pct",     "Dribble Success %",  "distribution",  True),
-    ("duels_won_p90",   "Duels Won / 90",     "defensive",     True),
-    ("duels_won_pct",   "Duels Won %",        "defensive",     True),
-    ("tackles_p90",     "Tackles / 90",       "defensive",     True),
-    ("interceptions_p90","Interceptions / 90","defensive",     True),
-    ("recoveries_p90",  "Recoveries / 90",    "defensive",     True),
+    ("goals",           "Goals",               "attacking",    True),
+    ("assists",         "Assists",             "attacking",    True),
+    ("xa_p90",          "xA / 90",             "attacking",    True),
+    ("np_xg_p90",       "npxG / 90",           "attacking",    True),
+    ("shots_p90",       "Shots / 90",          "attacking",    True),
+    ("chances_p90",     "Key Passes / 90",     "distribution", True),
+    ("long_balls_p90",  "Long Balls / 90",     "distribution", True),
+    ("crosses_p90",     "Crosses / 90",        "distribution", True),
+    ("cross_pct",       "Cross Success %",     "distribution", True),
+    ("dribbles_p90",    "Dribbles / 90",       "distribution", True),
+    ("dribble_pct",     "Dribble Success %",   "distribution", True),
+    ("recoveries_p90",  "Recoveries / 90",     "defensive",    True),
+    ("aerial_ratio",    "Aerial Win %",        "defensive",    True),
+    ("tackles_p90",     "Tackles / 90",        "defensive",    True),
+    ("interceptions_p90","Interceptions / 90", "defensive",    True),
 ]
 
 RADAR_METRICS: List[Tuple[str, str, str]] = [
-    ("goals",            "Goals",           "attacking"),
-    ("assists",          "Assists",         "attacking"),
-    ("xa_p90",           "xA / 90",         "attacking"),
-    ("shots_p90",        "Shots / 90",      "attacking"),
-    ("long_balls_p90",   "Long Balls / 90", "distribution"),
-    ("crosses_succ_p90", "Succ. Crosses",   "distribution"),
-    ("cross_pct",        "Cross %",         "distribution"),
-    ("dribbles_succ_p90","Dribbles / 90",   "distribution"),
-    ("dribble_pct",      "Dribble %",       "distribution"),
-    ("duels_won_p90",    "Duels Won / 90",  "defensive"),
-    ("duels_won_pct",    "Duels Won %",     "defensive"),
-    ("tackles_p90",      "Tackles / 90",    "defensive"),
-    ("interceptions_p90","Intercept. / 90", "defensive"),
-    ("recoveries_p90",   "Recoveries / 90", "defensive"),
+    ("goals",           "Goals",           "attacking"),
+    ("assists",         "Assists",         "attacking"),
+    ("xa_p90",          "xA / 90",         "attacking"),
+    ("np_xg_p90",       "npxG / 90",       "attacking"),
+    ("shots_p90",       "Shots / 90",      "attacking"),
+    ("chances_p90",     "Key Passes",      "distribution"),
+    ("long_balls_p90",  "Long Balls",      "distribution"),
+    ("crosses_p90",     "Crosses / 90",    "distribution"),
+    ("cross_pct",       "Cross %",         "distribution"),
+    ("dribbles_p90",    "Dribbles / 90",   "distribution"),
+    ("dribble_pct",     "Dribble %",       "distribution"),
+    ("recoveries_p90",  "Recoveries",      "defensive"),
+    ("aerial_ratio",    "Aerial %",        "defensive"),
+    ("tackles_p90",     "Tackles / 90",    "defensive"),
+    ("interceptions_p90","Intercept.",     "defensive"),
 ]
 
 CATEGORY_COLORS = {
@@ -170,11 +154,11 @@ MIN_MINUTES = 450  # ~5 full matches
 
 # Scout rating dimensions and their metric drivers
 SCOUT_RATING_AXES: List[Tuple[str, str, List[str]]] = [
-    ("Physical",         "physical",   ["duels_won_p90", "duels_won_pct", "dribbles_succ_p90"]),
-    ("Technical",        "technical",  ["cross_pct", "dribble_pct", "xa_p90", "chances_p90"]),
-    ("Offensive",        "offensive",  ["goals", "assists", "shots_p90", "xa_p90"]),
-    ("Set Pieces",       "set_pieces", ["crosses_succ_p90", "cross_pct", "long_balls_p90"]),
-    ("Against the Ball", "atb",        ["tackles_p90", "interceptions_p90", "recoveries_p90", "duels_won_p90"]),
+    ("Physical",         "physical",   ["aerial_ratio", "recoveries_p90", "pressures_p90"]),
+    ("Technical",        "technical",  ["dribble_pct", "cross_pct", "xa_p90", "chances_p90"]),
+    ("Offensive",        "offensive",  ["goals", "assists", "shots_p90", "np_xg_p90"]),
+    ("Set Pieces",       "set_pieces", ["crosses_p90", "cross_pct", "long_balls_p90"]),
+    ("Against the Ball", "atb",        ["tackles_p90", "interceptions_p90", "recoveries_p90", "aerial_ratio"]),
 ]
 
 
@@ -365,51 +349,22 @@ class PlayerDossierGenerator:
         if pid and pid in self._metric_cache:
             return self._metric_cache[pid]
 
-        metrics: Dict[str, float] = {}
         mins = _safe_float(_get(record, "minutes"), 0)
         nineties = mins / 90.0 if mins > 0 else 1.0
 
+        metrics: Dict[str, float] = {}
+
+        # Goals & assists: StatsBomb only stores per-90; derive season totals
+        metrics["goals"]   = round(_safe_float(_get(record, "goals_90"), 0) * nineties)
+        metrics["assists"] = round(_safe_float(_get(record, "assists_90"), 0) * nineties)
+
+        # All other metrics read directly; dribble_pct is a 0-1 ratio → convert to %
         for key, *_ in DOSSIER_METRICS:
+            if key in ("goals", "assists"):
+                continue
             raw = _get(record, key)
-            metrics[key] = _safe_float(raw, 0.0)
-
-        # Goals & assists: StatsBomb only stores per-90 values, so derive totals
-        # Try direct field first, then multiply per-90 by nineties
-        if metrics["goals"] == 0:
-            goals_90 = _safe_float(record.get("player_season_goals_90"), 0)
-            metrics["goals"] = round(goals_90 * nineties)
-        if metrics["assists"] == 0:
-            assists_90 = _safe_float(record.get("player_season_assists_90"), 0)
-            metrics["assists"] = round(assists_90 * nineties)
-
-        # Derived percentages if raw counts available but pct missing
-        if metrics["cross_pct"] == 0:
-            att = metrics["crosses_att_p90"]
-            succ = metrics["crosses_succ_p90"]
-            if att > 0:
-                metrics["cross_pct"] = round(succ / att * 100, 1)
-
-        # Dribble % — StatsBomb stores challenge_ratio (successful / attempted)
-        if metrics["dribble_pct"] == 0:
-            cr = _safe_float(record.get("player_season_challenge_ratio"), 0)
-            if cr > 0:
-                metrics["dribble_pct"] = round(cr * 100, 1)
-            else:
-                att = _safe_float(_get(record, "dribbles_att_p90"), 0)
-                succ = metrics["dribbles_succ_p90"]
-                if att > 0:
-                    metrics["dribble_pct"] = round(succ / att * 100, 1)
-
-        # Duels won % — StatsBomb stores aerial_ratio; try ground_duel_win_rate
-        if metrics["duels_won_pct"] == 0:
-            win_rate = _safe_float(record.get("player_season_ground_duel_win_rate"), 0)
-            if win_rate > 0:
-                metrics["duels_won_pct"] = round(win_rate * 100, 1)
-            else:
-                att = metrics["duels_att_p90"]
-                won = metrics["duels_won_p90"]
-                if att > 0:
-                    metrics["duels_won_pct"] = round(won / att * 100, 1)
+            val = _safe_float(raw, 0.0)
+            metrics[key] = val
 
         if pid:
             self._metric_cache[pid] = metrics
@@ -499,6 +454,22 @@ class PlayerDossierGenerator:
             except Exception:
                 dob_formatted = dob[:10]
 
+        # Height: API returns cm as integer; format as metres string
+        api_height_cm = _safe_float(record.get("player_height"), 0)
+        api_height_str = f"{api_height_cm / 100:.2f} m" if api_height_cm else ""
+
+        # Strong foot: infer from player_season_left_foot_ratio (>60% = Left, <40% = Right)
+        left_ratio = _safe_float(record.get("player_season_left_foot_ratio"), None)
+        if left_ratio is not None:
+            if left_ratio > 60:
+                api_foot = "Left"
+            elif left_ratio < 40:
+                api_foot = "Right"
+            else:
+                api_foot = "Both"
+        else:
+            api_foot = ""
+
         return {
             "name":           name,
             "name_parts":     name.upper().split(),
@@ -507,8 +478,8 @@ class PlayerDossierGenerator:
             "dob":            dob_formatted,
             "age":            age,
             "position_group": position_group,
-            "height":         overrides.get("height", ""),
-            "strong_foot":    overrides.get("strong_foot", ""),
+            "height":         overrides.get("height") or api_height_str,
+            "strong_foot":    overrides.get("strong_foot") or api_foot,
             "contract_exp":   overrides.get("contract_exp", ""),
             "tmv":            overrides.get("tmv", ""),
             "positions":      overrides.get("positions", [position_group[:2].upper()]),
@@ -1164,24 +1135,20 @@ class PlayerDossierGenerator:
     def _render_profile_bullets(self, d: Dict) -> str:
         m = d["metrics"]
         p = d["percentiles"]
-        pos_group = d["position_group"]
 
-        # Physical profile
         physical_bullets = [
-            f"<strong>{'Athletic mover' if p.get('dribbles_succ_p90', 50) > 60 else 'Composed mover'}</strong> — dribble success rate of {m.get('dribble_pct', 0):.1f}% underpins ball-carrying contributions.",
-            f"Duels won at {m.get('duels_won_pct', 0):.1f}% win rate ({p.get('duels_won_pct', 50)}th percentile), indicating <strong>{'above-average' if p.get('duels_won_pct', 50) > 50 else 'developing'} physical contest ability</strong>.",
-        ]
-
-        # Defensive profile
-        def_bullets = [
-            f"Records <strong>{m.get('tackles_p90', 0):.2f} tackles</strong> and <strong>{m.get('interceptions_p90', 0):.2f} interceptions</strong> per 90 minutes.",
+            f"<strong>{'Strong in the air' if p.get('aerial_ratio', 50) > 60 else 'Average aerially'}</strong> — wins {m.get('aerial_ratio', 0):.1f}% of aerial duels ({p.get('aerial_ratio', 50)}th percentile).",
             f"Ball recovery rate of <strong>{m.get('recoveries_p90', 0):.2f} per 90</strong> — ranked {p.get('recoveries_p90', 50)}th percentile among positional peers.",
         ]
 
-        # Offensive profile
+        def_bullets = [
+            f"Records <strong>{m.get('tackles_p90', 0):.2f} tackles</strong> and <strong>{m.get('interceptions_p90', 0):.2f} interceptions</strong> per 90 minutes.",
+            f"Dribble success rate of <strong>{m.get('dribble_pct', 0):.1f}%</strong>, completing <strong>{m.get('dribbles_p90', 0):.2f} dribbles per 90</strong>.",
+        ]
+
         off_bullets = [
-            f"<strong>{m.get('chances_p90', 0):.2f} chances created per 90</strong>, supported by a crossing accuracy of {m.get('cross_pct', 0):.1f}%.",
-            f"Contributes <strong>{int(m.get('goals', 0))} goals and {int(m.get('assists', 0))} assists</strong> this season — xA of {m.get('xa_p90', 0):.2f} per 90.",
+            f"<strong>{m.get('chances_p90', 0):.2f} key passes per 90</strong> with {m.get('crosses_p90', 0):.2f} completed crosses ({m.get('cross_pct', 0):.1f}% success rate).",
+            f"Contributes <strong>{int(m.get('goals', 0))} goals and {int(m.get('assists', 0))} assists</strong> — xA of {m.get('xa_p90', 0):.2f} per 90, npxG of {m.get('np_xg_p90', 0):.2f} per 90.",
         ]
 
         return f"""
