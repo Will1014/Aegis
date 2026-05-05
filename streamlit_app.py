@@ -437,7 +437,7 @@ for key, default in [
     ("squad_a", None), ("squad_b", None),
     ("authenticated", False),
     ("dossier_html", None), ("dossier_player", ""),
-    ("dossier_player_list", []),
+    ("dossier_player_list", []), ("d_league_last", ""),
 ]:
     if key not in st.session_state:
         st.session_state[key] = default
@@ -724,6 +724,11 @@ with st.sidebar:
             "League", list(COMPETITION_OPTIONS.keys()), key="d_league")
         d_league_id = COMPETITION_OPTIONS[d_league]
 
+        # Reset player list if league changes
+        if st.session_state.get("d_league_last") != d_league:
+            st.session_state.dossier_player_list = []
+            st.session_state["d_league_last"] = d_league
+
         # Load player list for selected league/season
         player_list = st.session_state.dossier_player_list
         if has_creds and st.button("🔍  Load Players", key="d_load",
@@ -750,15 +755,10 @@ with st.sidebar:
             d_player = st.text_input("Player name", key="d_player_text",
                                      placeholder="e.g. Tae-Seok Lee")
 
-        # Optional manual overrides
-        with st.expander("📝  Manual Overrides (optional)"):
-            d_height   = st.text_input("Height (e.g. 1.74 m)", key="d_height")
-            d_foot     = st.selectbox("Strong foot", ["", "Left", "Right", "Both"], key="d_foot")
-            d_tmv      = st.text_input("TMV (e.g. €1.5M)", key="d_tmv")
-            d_contract = st.text_input("Contract expiry (e.g. Jun 2029)", key="d_contract")
-            d_nat      = st.text_input("Nationality", key="d_nat")
-            d_pos_raw  = st.text_input("Positions (comma-separated, e.g. LB,LWB,LM)",
-                                       key="d_pos")
+        # Optional enrichment — only fields not auto-populated from StatsBomb
+        with st.expander("📝  Add transfer info (optional)"):
+            d_tmv      = st.text_input("Transfer market value", placeholder="e.g. €1.5M", key="d_tmv")
+            d_contract = st.text_input("Contract expiry", placeholder="e.g. Jun 2029", key="d_contract")
 
         dossier_clicked = st.button("⚽  Generate Dossier", use_container_width=True,
                                     type="primary", key="d_run")
@@ -853,21 +853,12 @@ if is_dossier:
                 sb = StatsBombClient()
                 _stats = sb.get_player_season_stats(_d_league_id, season_id)
 
-                # Build overrides from sidebar inputs
+                # Build overrides — TMV and contract only (height/foot auto from API)
                 _overrides = {}
-                _d_h = st.session_state.get("d_height", "")
-                _d_f = st.session_state.get("d_foot", "")
                 _d_t = st.session_state.get("d_tmv", "")
                 _d_c = st.session_state.get("d_contract", "")
-                _d_n = st.session_state.get("d_nat", "")
-                _d_p = st.session_state.get("d_pos", "")
-                if _d_h: _overrides["height"] = _d_h
-                if _d_f: _overrides["strong_foot"] = _d_f
                 if _d_t: _overrides["tmv"] = _d_t
                 if _d_c: _overrides["contract_exp"] = _d_c
-                if _d_n: _overrides["nationality"] = _d_n
-                if _d_p:
-                    _overrides["positions"] = [p.strip() for p in _d_p.split(",") if p.strip()]
 
                 # Competition display name
                 _comp_name = st.session_state.get("d_league", "")
@@ -904,9 +895,15 @@ if is_dossier:
                 file_name=f"{player_label.replace(' ', '_')}___Scouting_Dossier.html",
                 mime="text/html",
             )
-        st.components.v1.html(dossier_html, height=1400, scrolling=True)
+        st.components.v1.html(dossier_html, height=1600, scrolling=True)
     elif not _dossier_trigger:
-        st.info("Select a league and season, load players, then choose a player and press **Generate Dossier**.")
+        st.markdown("""
+<div style="text-align:center; padding:60px 0; color:#555;">
+  <div style="font-size:40px; margin-bottom:16px; opacity:0.3">⚽</div>
+  <div style="font-size:14px; margin-bottom:8px;">Select a league, load players, then generate a dossier.</div>
+  <div style="font-size:12px; color:#333;">Height and strong foot are auto-detected from StatsBomb. Add TMV and contract in the expander if known.</div>
+</div>
+""", unsafe_allow_html=True)
 
     st.stop()
 

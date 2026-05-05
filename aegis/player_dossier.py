@@ -494,11 +494,35 @@ class PlayerDossierGenerator:
     # HTML RENDERING
     # -------------------------------------------------------------------------
 
+    @staticmethod
+    def _ordinal(n: int) -> str:
+        """Return correct ordinal suffix for any integer."""
+        if 11 <= (n % 100) <= 13:
+            return "th"
+        return {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
+
+    @staticmethod
+    def _pct_color(pct: int) -> str:
+        """Return CSS colour based on percentile tertile."""
+        if pct >= 67:
+            return "#34d399"   # green
+        if pct >= 34:
+            return "#f59e0b"   # amber
+        return "#f87171"       # red
+
+    @staticmethod
+    def _fmt_val(key: str, val: float) -> str:
+        """Format a metric value for display."""
+        PCT_KEYS = {"cross_pct", "dribble_pct", "aerial_ratio", "pass_acc"}
+        INT_KEYS = {"goals", "assists"}
+        if key in INT_KEYS:
+            return str(int(val))
+        if key in PCT_KEYS:
+            return f"{val:.1f}%"
+        return f"{val:.2f}" if val < 10 else f"{val:.1f}"
+
     def _render_html(self, d: Dict, competition_name: str, season_name: str) -> str:
         name = d["name"]
-        name_upper = name.upper()
-
-        # Split name for big cover display
         parts = name.split()
         first_part = " ".join(parts[:-1]) if len(parts) > 1 else name
         last_part = parts[-1] if len(parts) > 1 else ""
@@ -506,28 +530,43 @@ class PlayerDossierGenerator:
         positions_html = "".join(
             f'<span class="pos-tag pos-tag--active">{p}</span>'
             if i == 0 else f'<span class="pos-tag">{p}</span>'
-            for i, p in enumerate(d.get("positions", ["LB"]))
+            for i, p in enumerate(d.get("positions", ["MF"]))
         )
 
         stat_cards_html = self._render_stat_cards(d["metrics"], d["percentiles"])
-        radar_html = self._render_radar_js(d["metrics"], d["percentiles"])
-        scout_html = self._render_scout_bars(d["scout_ratings"])
-        bio_rows_html = self._render_bio_rows(d)
+        radar_js        = self._render_radar_js(d["metrics"], d["percentiles"])
+        scout_html      = self._render_scout_ratings(d["scout_ratings"])
+        bio_rows_html   = self._render_bio_rows(d)
+        profile_html    = self._render_profile_bullets(d)
 
-        tmv_display = d.get("tmv") or "—"
+        height_display   = d.get("height") or "—"
+        strong_foot      = d.get("strong_foot") or "—"
         contract_display = d.get("contract_exp") or "—"
-        height_display = d.get("height") or "—"
-        strong_foot_display = d.get("strong_foot") or "—"
-        age_display = f"Age {d['age']}" if d.get("age") else ""
-        dob_display = d.get("dob") or ""
+        tmv_display      = d.get("tmv") or "—"
+        age_display      = f"Age {d['age']}" if d.get("age") else ""
+        bio_line         = " · ".join(filter(None, [d.get("nationality"), d.get("dob"), age_display]))
+        season_label     = competition_name or "Season Stats"
+        if season_name and season_name not in season_label:
+            season_label = f"{season_label} {season_name}".strip()
 
-        bio_line = " · ".join(filter(None, [d.get("nationality"), dob_display, age_display]))
-        season_label = competition_name or "Season Stats"
-        season_sub = season_name or ""
-        if season_sub and season_label and season_sub not in season_label:
-            season_label = f"{season_label} {season_sub}".strip()
+        primary_pos = d["positions"][0] if d.get("positions") else d["position_group"][:2].upper()
+        pos_group   = d.get("position_group", "")
 
-        html = f"""<!DOCTYPE html>
+        # Cover attribute tiles — only show TMV/contract if populated
+        def attr_tile(label, value, gold=False):
+            if value == "—":
+                return ""
+            cls = ' class="gold"' if gold else ''
+            return f'<div><div class="attr-label">{label}</div><div class="attr-value"{cls}>{value}</div></div>'
+
+        cover_attrs = "".join(filter(None, [
+            attr_tile("Height", height_display),
+            attr_tile("Strong Foot", strong_foot),
+            attr_tile("Contract", contract_display),
+            attr_tile("TMV", tmv_display, gold=True),
+        ]))
+
+        return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8"/>
@@ -535,532 +574,587 @@ class PlayerDossierGenerator:
 <title>{name} · Aegis Scouting Dossier</title>
 <link rel="preconnect" href="https://fonts.googleapis.com"/>
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
-<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@400;600;700;800;900&family=Barlow:wght@400;500;600&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet"/>
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:ital,wght@0,400;0,600;0,700;0,800;0,900;1,700&family=Barlow:wght@400;500;600&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet"/>
 <style>
-  *, *::before, *::after {{ box-sizing: border-box; margin: 0; padding: 0; }}
+*, *::before, *::after {{ box-sizing: border-box; margin: 0; padding: 0; }}
 
-  :root {{
-    --bg:        #0c0c0c;
-    --bg2:       #111111;
-    --bg3:       #181818;
-    --border:    #222222;
-    --gold:      #c9a227;
-    --gold-lt:   #f0c040;
-    --purple:    #7c3aed;
-    --amber:     #d97706;
-    --grey:      #6b7280;
-    --text:      #e8e8e8;
-    --muted:     #666666;
-    --label:     #444444;
-    --white:     #ffffff;
-    --section-gap: 48px;
-  }}
+:root {{
+  --bg:       #0b0b0b;
+  --bg2:      #111111;
+  --bg3:      #171717;
+  --border:   #1f1f1f;
+  --border2:  #2a2a2a;
+  --gold:     #c9a227;
+  --purple:   #7c3aed;
+  --amber:    #d97706;
+  --green:    #34d399;
+  --red:      #f87171;
+  --text:     #e8e8e8;
+  --muted:    #555555;
+  --white:    #ffffff;
+  --gap:      52px;
+}}
 
-  html {{ scroll-behavior: smooth; }}
+html {{ scroll-behavior: smooth; }}
+body {{
+  background: var(--bg);
+  color: var(--text);
+  font-family: 'Barlow', sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}}
 
-  body {{
-    background: var(--bg);
-    color: var(--text);
-    font-family: 'Barlow', sans-serif;
-    font-size: 14px;
-    line-height: 1.5;
-  }}
+.page {{ max-width: 1080px; margin: 0 auto; padding: 0 28px 100px; }}
 
-  /* ── LAYOUT ── */
-  .page {{ max-width: 1100px; margin: 0 auto; padding: 0 24px 80px; }}
+/* ── COVER ─────────────────────────────────────────────────── */
+.cover {{
+  display: grid;
+  grid-template-columns: 1fr 340px;
+  min-height: 400px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: var(--gap);
+  position: relative;
+  overflow: hidden;
+}}
+.cover::before {{
+  content: '';
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(ellipse 60% 80% at 80% 50%, #7c3aed14 0%, transparent 70%),
+    radial-gradient(ellipse 30% 40% at 20% 80%, #c9a22709 0%, transparent 60%);
+  pointer-events: none;
+}}
+.cover-left {{
+  padding: 44px 0 44px;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  position: relative;
+  z-index: 1;
+}}
+.eyebrow {{
+  font-family: 'DM Mono', monospace;
+  font-size: 9px;
+  letter-spacing: 0.22em;
+  color: var(--muted);
+  text-transform: uppercase;
+  margin-bottom: 22px;
+}}
+.cover-name {{
+  font-family: 'Barlow Condensed', sans-serif;
+  font-weight: 900;
+  font-size: clamp(56px, 6.5vw, 92px);
+  line-height: 0.87;
+  color: var(--white);
+  text-transform: uppercase;
+  letter-spacing: -1px;
+  margin-bottom: 24px;
+}}
+.cover-rule {{
+  width: 36px;
+  height: 3px;
+  background: var(--gold);
+  margin-bottom: 18px;
+  border-radius: 1px;
+}}
+.cover-club {{
+  font-family: 'Barlow Condensed', sans-serif;
+  font-weight: 700;
+  font-size: 17px;
+  letter-spacing: 0.1em;
+  color: var(--text);
+  text-transform: uppercase;
+  margin-bottom: 5px;
+}}
+.cover-bio {{
+  font-size: 12px;
+  color: var(--muted);
+  margin-bottom: 28px;
+  letter-spacing: 0.02em;
+}}
+.pos-tags {{
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin-bottom: var(--gap);
+}}
+.pos-tag {{
+  padding: 4px 13px;
+  border: 1px solid var(--border2);
+  border-radius: 2px;
+  font-family: 'DM Mono', monospace;
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  color: var(--muted);
+}}
+.pos-tag--active {{
+  background: var(--purple);
+  border-color: var(--purple);
+  color: #fff;
+}}
+.cover-attrs {{
+  display: flex;
+  gap: 32px;
+  flex-wrap: wrap;
+  margin-top: auto;
+}}
+.attr-label {{
+  font-family: 'DM Mono', monospace;
+  font-size: 8px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 5px;
+}}
+.attr-value {{
+  font-family: 'Barlow Condensed', sans-serif;
+  font-weight: 700;
+  font-size: 20px;
+  color: var(--white);
+}}
+.attr-value.gold {{ color: var(--gold); }}
 
-  /* ── COVER ── */
-  .cover {{
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    min-height: 420px;
-    border-bottom: 1px solid var(--border);
-    margin-bottom: var(--section-gap);
-    position: relative;
-    overflow: hidden;
-  }}
-  .cover::after {{
-    content: '';
-    position: absolute;
-    inset: 0;
-    background: radial-gradient(ellipse at 70% 50%, #7c3aed18 0%, transparent 65%);
-    pointer-events: none;
-  }}
-  .cover-left {{
-    padding: 48px 0 48px;
-    display: flex;
-    flex-direction: column;
-    justify-content: space-between;
-  }}
-  .cover-eyebrow {{
-    font-family: 'DM Mono', monospace;
-    font-size: 10px;
-    letter-spacing: 0.2em;
-    color: var(--muted);
-    text-transform: uppercase;
-    margin-bottom: 20px;
-  }}
-  .cover-name {{
-    font-family: 'Barlow Condensed', sans-serif;
-    font-weight: 900;
-    font-size: clamp(52px, 7vw, 88px);
-    line-height: 0.9;
-    color: var(--white);
-    text-transform: uppercase;
-    letter-spacing: -1px;
-    margin-bottom: 28px;
-  }}
-  .cover-divider {{
-    width: 40px;
-    height: 3px;
-    background: var(--gold);
-    margin-bottom: 20px;
-  }}
-  .cover-club {{
-    font-family: 'Barlow Condensed', sans-serif;
-    font-weight: 700;
-    font-size: 18px;
-    letter-spacing: 0.08em;
-    color: var(--text);
-    text-transform: uppercase;
-    margin-bottom: 6px;
-  }}
-  .cover-bio {{ color: var(--grey); font-size: 12px; margin-bottom: 32px; }}
-  .pos-tags {{ display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 40px; }}
-  .pos-tag {{
-    padding: 5px 14px;
-    border: 1px solid var(--border);
-    border-radius: 3px;
-    font-family: 'DM Mono', monospace;
-    font-size: 11px;
-    letter-spacing: 0.1em;
-    color: var(--grey);
-    cursor: default;
-  }}
-  .pos-tag--active {{
-    background: var(--purple);
-    border-color: var(--purple);
-    color: #fff;
-  }}
-  .cover-attrs {{
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 20px 40px;
-  }}
-  .cover-attr-label {{
-    font-family: 'DM Mono', monospace;
-    font-size: 9px;
-    letter-spacing: 0.15em;
-    text-transform: uppercase;
-    color: var(--muted);
-    margin-bottom: 4px;
-  }}
-  .cover-attr-value {{
-    font-family: 'Barlow Condensed', sans-serif;
-    font-weight: 700;
-    font-size: 22px;
-    color: var(--white);
-  }}
-  .cover-attr-value.gold {{ color: var(--gold); }}
-  .cover-right {{
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    position: relative;
-    padding: 32px 0;
-  }}
-  .cover-badge {{
-    width: 200px;
-    height: 200px;
-    border-radius: 50%;
-    background: radial-gradient(circle, #1a1a2e 0%, #0c0c0c 100%);
-    border: 1px solid var(--border);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    position: relative;
-  }}
-  .cover-badge::before {{
-    content: '';
-    position: absolute;
-    inset: -1px;
-    border-radius: 50%;
-    background: conic-gradient(var(--purple) 0deg, transparent 120deg, var(--gold) 240deg, transparent 360deg);
-    mask: radial-gradient(circle at center, transparent 95px, black 97px);
-    -webkit-mask: radial-gradient(circle at center, transparent 95px, black 97px);
-  }}
-  .cover-badge-inner {{
-    font-family: 'Barlow Condensed', sans-serif;
-    font-weight: 900;
-    font-size: 42px;
-    color: var(--purple);
-    opacity: 0.6;
-    letter-spacing: -2px;
-  }}
+.cover-right {{
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  z-index: 1;
+}}
+.cover-graphic {{
+  position: relative;
+  width: 260px;
+  height: 260px;
+}}
+.cover-ring {{
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  border: 1px solid var(--border2);
+}}
+.cover-ring-inner {{
+  position: absolute;
+  inset: 24px;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+}}
+.cover-pos-large {{
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 4px;
+}}
+.cover-pos-abbr {{
+  font-family: 'Barlow Condensed', sans-serif;
+  font-weight: 900;
+  font-style: italic;
+  font-size: 72px;
+  color: var(--purple);
+  opacity: 0.18;
+  line-height: 1;
+  letter-spacing: -4px;
+}}
+.cover-pos-label {{
+  font-family: 'DM Mono', monospace;
+  font-size: 8px;
+  letter-spacing: 0.22em;
+  color: var(--muted);
+  text-transform: uppercase;
+}}
+.cover-arc {{
+  position: absolute;
+  inset: -1px;
+  border-radius: 50%;
+  background: conic-gradient(
+    var(--purple) 0deg 90deg,
+    transparent 90deg 180deg,
+    var(--gold) 180deg 270deg,
+    transparent 270deg 360deg
+  );
+  mask: radial-gradient(circle at center, transparent calc(50% - 2px), black 50%);
+  -webkit-mask: radial-gradient(circle at center, transparent calc(50% - 2px), black 50%);
+  opacity: 0.5;
+}}
 
-  /* ── SECTION HEADER ── */
-  .section-header {{
-    font-family: 'DM Mono', monospace;
-    font-size: 9px;
-    letter-spacing: 0.25em;
-    text-transform: uppercase;
-    color: var(--muted);
-    border-bottom: 1px solid var(--border);
-    padding-bottom: 10px;
-    margin-bottom: 24px;
-    display: flex;
-    align-items: center;
-    gap: 12px;
-  }}
-  .section-header .pill {{
-    background: var(--purple);
-    color: #fff;
-    padding: 2px 8px;
-    border-radius: 2px;
-    font-size: 8px;
-  }}
+/* ── SECTION HEADER ─────────────────────────────────────────── */
+.sh {{
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 11px;
+  margin-bottom: 28px;
+}}
+.sh-label {{
+  font-family: 'DM Mono', monospace;
+  font-size: 9px;
+  letter-spacing: 0.28em;
+  text-transform: uppercase;
+  color: var(--muted);
+}}
+.sh-pill {{
+  background: var(--purple);
+  color: #fff;
+  padding: 2px 9px;
+  border-radius: 2px;
+  font-family: 'DM Mono', monospace;
+  font-size: 8px;
+  letter-spacing: 0.08em;
+}}
+.sh-note {{
+  margin-left: auto;
+  font-family: 'DM Mono', monospace;
+  font-size: 8px;
+  letter-spacing: 0.08em;
+  color: #333;
+}}
 
-  /* ── STAT GRID ── */
-  .stat-grid {{
-    display: grid;
-    grid-template-columns: repeat(3, 1fr);
-    gap: 2px;
-    margin-bottom: var(--section-gap);
-  }}
-  .stat-card {{
-    background: var(--bg2);
-    padding: 20px 18px 16px;
-    position: relative;
-    overflow: hidden;
-  }}
-  .stat-card::before {{
-    content: '';
-    position: absolute;
-    top: 0; left: 0; right: 0;
-    height: 2px;
-    background: var(--cat-color, var(--border));
-  }}
-  .stat-card--attacking {{ --cat-color: var(--purple); }}
-  .stat-card--distribution {{ --cat-color: var(--grey); }}
-  .stat-card--defensive {{ --cat-color: var(--amber); }}
-  .stat-label {{
-    font-family: 'DM Mono', monospace;
-    font-size: 8px;
-    letter-spacing: 0.18em;
-    text-transform: uppercase;
-    color: var(--muted);
-    margin-bottom: 8px;
-  }}
-  .stat-row {{ display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 10px; }}
-  .stat-value {{
-    font-family: 'Barlow Condensed', sans-serif;
-    font-weight: 700;
-    font-size: 36px;
-    color: var(--white);
-    line-height: 1;
-  }}
-  .stat-rank {{
-    font-family: 'DM Mono', monospace;
-    font-size: 11px;
-    color: var(--muted);
-  }}
-  .pbar-track {{
-    height: 2px;
-    background: var(--border);
-    border-radius: 1px;
-    overflow: hidden;
-  }}
-  .pbar-fill {{
-    height: 100%;
-    border-radius: 1px;
-    background: var(--cat-color, var(--grey));
-    transition: width 0.4s ease;
-  }}
+/* ── SCOUTING REPORT ─────────────────────────────────────────── */
+.report-grid {{
+  display: grid;
+  grid-template-columns: 200px 1fr;
+  gap: 40px;
+  margin-bottom: var(--gap);
+}}
+.sidebar-label {{
+  font-family: 'DM Mono', monospace;
+  font-size: 8px;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 10px;
+  margin-top: 28px;
+}}
+.sidebar-label:first-child {{ margin-top: 0; }}
+.bio-row {{
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  padding: 7px 0;
+  border-bottom: 1px solid #161616;
+  font-size: 12px;
+}}
+.bio-row-key {{ color: var(--muted); }}
+.bio-row-val {{ color: var(--white); font-weight: 600; font-size: 12px; }}
+.bio-row-val.gold {{ color: var(--gold); }}
 
-  /* ── RADAR ── */
-  .radar-section {{
-    display: grid;
-    grid-template-columns: 280px 1fr;
-    gap: 40px;
-    margin-bottom: var(--section-gap);
-    align-items: start;
-  }}
-  .radar-left {{ }}
-  .radar-canvas {{ width: 100%; max-width: 460px; margin: 0 auto; display: block; }}
-  .radar-legend {{
-    display: flex;
-    flex-direction: column;
-    gap: 16px;
-    margin-top: 16px;
-  }}
-  .legend-item {{ display: flex; align-items: center; gap: 10px; }}
-  .legend-dot {{
-    width: 10px; height: 10px; border-radius: 50%;
-    flex-shrink: 0;
-  }}
-  .legend-label {{ font-size: 11px; color: var(--grey); }}
+/* Scout star ratings */
+.scout-ratings {{ display: flex; flex-direction: column; gap: 12px; }}
+.sr-row {{ }}
+.sr-header {{ display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px; }}
+.sr-name {{ font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.1em; }}
+.sr-score {{
+  font-family: 'Barlow Condensed', sans-serif;
+  font-weight: 700;
+  font-size: 15px;
+  color: var(--white);
+}}
+.sr-track {{
+  height: 2px;
+  background: var(--border2);
+  border-radius: 1px;
+  overflow: hidden;
+}}
+.sr-fill {{ height: 100%; border-radius: 1px; }}
 
-  /* ── SCOUT RATINGS ── */
-  .scout-section {{ margin-bottom: var(--section-gap); }}
-  .scout-bars {{ display: flex; flex-direction: column; gap: 18px; max-width: 420px; }}
-  .scout-bar-row {{ }}
-  .scout-bar-header {{
-    display: flex;
-    justify-content: space-between;
-    margin-bottom: 6px;
-  }}
-  .scout-bar-name {{ font-size: 11px; color: var(--grey); text-transform: uppercase; letter-spacing: 0.1em; }}
-  .scout-bar-score {{
-    font-family: 'Barlow Condensed', sans-serif;
-    font-weight: 700;
-    font-size: 16px;
-    color: var(--white);
-  }}
-  .scout-track {{
-    height: 3px;
-    background: var(--border);
-    border-radius: 2px;
-  }}
-  .scout-fill {{
-    height: 100%;
-    border-radius: 2px;
-    background: linear-gradient(90deg, var(--purple), var(--gold));
-  }}
+/* Profile bullets */
+.profile-cols {{
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 28px;
+}}
+.pcol-title {{
+  font-family: 'DM Mono', monospace;
+  font-size: 8px;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 14px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--border);
+}}
+.bullet {{
+  position: relative;
+  padding-left: 13px;
+  margin-bottom: 14px;
+  font-size: 12px;
+  color: #888;
+  line-height: 1.6;
+}}
+.bullet::before {{
+  content: '•';
+  position: absolute;
+  left: 0;
+  color: var(--gold);
+  line-height: 1.6;
+}}
+.bullet strong {{ color: var(--text); font-weight: 600; }}
 
-  /* ── PROFILE SECTION ── */
-  .profile-section {{
-    display: grid;
-    grid-template-columns: 1fr 1fr 1fr;
-    gap: 32px;
-    margin-bottom: var(--section-gap);
-  }}
-  .profile-col-title {{
-    font-family: 'DM Mono', monospace;
-    font-size: 9px;
-    letter-spacing: 0.2em;
-    text-transform: uppercase;
-    color: var(--muted);
-    margin-bottom: 16px;
-    padding-bottom: 10px;
-    border-bottom: 1px solid var(--border);
-  }}
-  .profile-bullet {{
-    padding-left: 14px;
-    position: relative;
-    margin-bottom: 16px;
-    font-size: 12.5px;
-    color: var(--grey);
-    line-height: 1.55;
-  }}
-  .profile-bullet::before {{
-    content: '•';
-    position: absolute;
-    left: 0;
-    color: var(--gold);
-  }}
-  .profile-bullet strong {{ color: var(--text); }}
+/* ── SEASON SUMMARY BAR ──────────────────────────────────────── */
+.summary-bar {{
+  display: flex;
+  gap: 2px;
+  margin-bottom: 20px;
+}}
+.summary-cell {{
+  flex: 1;
+  background: var(--bg2);
+  padding: 16px 20px;
+  border-top: 2px solid var(--border2);
+}}
+.summary-cell.hl {{ border-top-color: var(--purple); }}
+.s-label {{
+  font-family: 'DM Mono', monospace;
+  font-size: 8px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 6px;
+}}
+.s-value {{
+  font-family: 'Barlow Condensed', sans-serif;
+  font-weight: 700;
+  font-size: 30px;
+  color: var(--white);
+  line-height: 1;
+}}
 
-  /* ── SEASON SUMMARY ── */
-  .season-summary {{
-    background: var(--bg2);
-    border: 1px solid var(--border);
-    padding: 20px 24px;
-    display: flex;
-    gap: 40px;
-    margin-bottom: 24px;
-    align-items: center;
-  }}
-  .summary-item {{ }}
-  .summary-label {{
-    font-family: 'DM Mono', monospace;
-    font-size: 8px;
-    letter-spacing: 0.15em;
-    text-transform: uppercase;
-    color: var(--muted);
-    margin-bottom: 4px;
-  }}
-  .summary-value {{
-    font-family: 'Barlow Condensed', sans-serif;
-    font-weight: 700;
-    font-size: 28px;
-    color: var(--white);
-  }}
+/* ── STAT CARDS ─────────────────────────────────────────────── */
+.stat-grid {{
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 2px;
+  margin-bottom: var(--gap);
+}}
+.sc {{
+  background: var(--bg2);
+  padding: 18px 16px 14px;
+  position: relative;
+  overflow: hidden;
+}}
+.sc::before {{
+  content: '';
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  height: 2px;
+  background: var(--cat-color, var(--border2));
+}}
+.sc-label {{
+  font-family: 'DM Mono', monospace;
+  font-size: 8px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 10px;
+}}
+.sc-main {{
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}}
+.sc-value {{
+  font-family: 'Barlow Condensed', sans-serif;
+  font-weight: 700;
+  font-size: 34px;
+  color: var(--white);
+  line-height: 1;
+}}
+.sc-pct {{
+  font-family: 'DM Mono', monospace;
+  font-size: 12px;
+  font-weight: 500;
+}}
+.sc-bar {{ height: 2px; background: var(--border); border-radius: 1px; overflow: hidden; }}
+.sc-bar-fill {{ height: 100%; border-radius: 1px; background: var(--cat-color); opacity: 0.7; }}
 
-  /* ── SIDEBAR (left panel) ── */
-  .two-col {{ display: grid; grid-template-columns: 220px 1fr; gap: 40px; }}
-  .sidebar-profile {{ }}
-  .sidebar-section-label {{
-    font-family: 'DM Mono', monospace;
-    font-size: 8px;
-    letter-spacing: 0.18em;
-    text-transform: uppercase;
-    color: var(--muted);
-    margin-bottom: 12px;
-    margin-top: 24px;
-  }}
-  .sidebar-row {{
-    display: flex;
-    justify-content: space-between;
-    padding: 8px 0;
-    border-bottom: 1px solid #1a1a1a;
-    font-size: 12px;
-  }}
-  .sidebar-row-label {{ color: var(--muted); }}
-  .sidebar-row-value {{ color: var(--white); font-weight: 600; }}
-  .sidebar-row-value.gold {{ color: var(--gold); }}
+/* ── RADAR ──────────────────────────────────────────────────── */
+.radar-wrap {{
+  display: grid;
+  grid-template-columns: 1fr 260px;
+  gap: 40px;
+  margin-bottom: var(--gap);
+  align-items: start;
+}}
+.radar-canvas-wrap {{
+  display: flex;
+  justify-content: center;
+}}
+canvas#radarChart {{
+  width: 100%;
+  max-width: 480px;
+  height: auto;
+  display: block;
+}}
+.radar-table {{ }}
+.radar-row {{
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 6px 0;
+  border-bottom: 1px solid #141414;
+}}
+.radar-metric {{
+  font-size: 11px;
+  color: #555;
+  flex: 1;
+}}
+.radar-pct {{
+  font-family: 'Barlow Condensed', sans-serif;
+  font-weight: 700;
+  font-size: 16px;
+  min-width: 40px;
+  text-align: right;
+}}
+.radar-legend {{
+  display: flex;
+  gap: 20px;
+  margin-top: 14px;
+  flex-wrap: wrap;
+}}
+.rl-item {{ display: flex; align-items: center; gap: 7px; }}
+.rl-dot {{ width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }}
+.rl-label {{ font-size: 10px; color: var(--muted); }}
 
-  /* ── AEGIS WATERMARK ── */
-  .watermark {{
-    text-align: center;
-    padding-top: 40px;
-    border-top: 1px solid var(--border);
-    margin-top: 60px;
-  }}
-  .watermark-logo {{
-    font-family: 'Barlow Condensed', sans-serif;
-    font-weight: 800;
-    font-size: 13px;
-    letter-spacing: 0.2em;
-    color: var(--muted);
-    text-transform: uppercase;
-  }}
-  .watermark-sub {{
-    font-size: 10px;
-    color: var(--label);
-    margin-top: 4px;
-    font-family: 'DM Mono', monospace;
-    letter-spacing: 0.1em;
-  }}
+/* ── FOOTER ─────────────────────────────────────────────────── */
+.footer {{
+  margin-top: 64px;
+  padding-top: 24px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}}
+.footer-logo {{
+  font-family: 'Barlow Condensed', sans-serif;
+  font-weight: 800;
+  font-size: 12px;
+  letter-spacing: 0.22em;
+  color: var(--muted);
+  text-transform: uppercase;
+}}
+.footer-sub {{
+  font-family: 'DM Mono', monospace;
+  font-size: 9px;
+  color: #2a2a2a;
+  letter-spacing: 0.08em;
+}}
 </style>
 </head>
 <body>
 <div class="page">
 
-  <!-- ═══════════════════════════════════════════════════════ COVER -->
-  <div class="cover">
-    <div class="cover-left">
-      <div>
-        <div class="cover-eyebrow">Scouting Dossier · {season_label}</div>
-        <div class="cover-name">{first_part}<br/>{last_part}</div>
-        <div class="cover-divider"></div>
-        <div class="cover-club">{d['team']}</div>
-        <div class="cover-bio">{bio_line}</div>
-        <div class="pos-tags">{positions_html}</div>
-      </div>
-      <div class="cover-attrs">
-        <div>
-          <div class="cover-attr-label">Height</div>
-          <div class="cover-attr-value">{height_display}</div>
-        </div>
-        <div>
-          <div class="cover-attr-label">Strong Foot</div>
-          <div class="cover-attr-value">{strong_foot_display}</div>
-        </div>
-        <div>
-          <div class="cover-attr-label">Contract</div>
-          <div class="cover-attr-value">{contract_display}</div>
-        </div>
-        <div>
-          <div class="cover-attr-label">TMV</div>
-          <div class="cover-attr-value gold">{tmv_display}</div>
-        </div>
-      </div>
-    </div>
-    <div class="cover-right">
-      <div class="cover-badge">
-        <div class="cover-badge-inner">{d['positions'][0] if d['positions'] else 'FW'}</div>
+<!-- ═══ COVER ═══════════════════════════════════════════════ -->
+<div class="cover">
+  <div class="cover-left">
+    <div class="eyebrow">Scouting Dossier · {season_label}</div>
+    <div class="cover-name">{first_part}<br/>{last_part}</div>
+    <div class="cover-rule"></div>
+    <div class="cover-club">{d['team']}</div>
+    <div class="cover-bio">{bio_line}</div>
+    <div class="pos-tags">{positions_html}</div>
+    <div class="cover-attrs">{cover_attrs}</div>
+  </div>
+  <div class="cover-right">
+    <div class="cover-graphic">
+      <div class="cover-ring"></div>
+      <div class="cover-ring-inner"></div>
+      <div class="cover-arc"></div>
+      <div class="cover-pos-large">
+        <div class="cover-pos-abbr">{primary_pos}</div>
+        <div class="cover-pos-label">{pos_group}</div>
       </div>
     </div>
   </div>
-
-  <!-- ═══════════════════════════════════════════════════════ SCOUTING REPORT -->
-  <div class="section-header">
-    <span>Scouting Report</span>
-    <span class="pill">{d['position_group'].upper()}</span>
-  </div>
-
-  <div class="two-col" style="margin-bottom: var(--section-gap);">
-    <div class="sidebar-profile">
-      <div class="sidebar-section-label">Player Profile</div>
-      {bio_rows_html}
-      <div class="sidebar-section-label" style="margin-top:28px;">Scout Rating</div>
-      {scout_html}
-    </div>
-    <div class="profile-section" style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:24px;">
-      {self._render_profile_bullets(d)}
-    </div>
-  </div>
-
-  <!-- ═══════════════════════════════════════════════════════ DATA & METRICS -->
-  <div class="section-header">
-    <span>Data &amp; Metrics</span>
-    <span style="color:var(--muted); font-size:9px;">{season_label} · Percentiles vs players in similar positions</span>
-  </div>
-
-  <div class="season-summary">
-    <div class="summary-item">
-      <div class="summary-label">Matches</div>
-      <div class="summary-value">{d['matches']}</div>
-    </div>
-    <div class="summary-item">
-      <div class="summary-label">Minutes</div>
-      <div class="summary-value">{d['minutes']:,}</div>
-    </div>
-    <div class="summary-item">
-      <div class="summary-label">Goals</div>
-      <div class="summary-value">{int(d['metrics'].get('goals', 0))}</div>
-    </div>
-    <div class="summary-item">
-      <div class="summary-label">Assists</div>
-      <div class="summary-value">{int(d['metrics'].get('assists', 0))}</div>
-    </div>
-  </div>
-
-  <div class="stat-grid">
-    {stat_cards_html}
-  </div>
-
-  <!-- ═══════════════════════════════════════════════════════ RADAR -->
-  <div class="section-header">
-    <span>Performance Radar</span>
-  </div>
-  <div class="radar-section">
-    <div>
-      <canvas class="radar-canvas" id="radarChart" width="460" height="460"></canvas>
-      <div class="radar-legend">
-        <div class="legend-item">
-          <div class="legend-dot" style="background: #7c3aed;"></div>
-          <span class="legend-label">Attacking / Output</span>
-        </div>
-        <div class="legend-item">
-          <div class="legend-dot" style="background: #9ca3af;"></div>
-          <span class="legend-label">Distribution / Progression</span>
-        </div>
-        <div class="legend-item">
-          <div class="legend-dot" style="background: #d97706;"></div>
-          <span class="legend-label">Defensive / Duels</span>
-        </div>
-      </div>
-    </div>
-    <div style="display:flex; flex-direction:column; gap:4px; padding-top:8px;">
-      {self._render_radar_labels(d['percentiles'])}
-    </div>
-  </div>
-
-  <!-- ═══════════════════════════════════════════════════════ FOOTER -->
-  <div class="watermark">
-    <div class="watermark-logo">Aegis Football Advisory Group</div>
-    <div class="watermark-sub">Data: StatsBomb · Powered by MTFI Platform · {datetime.now().strftime('%B %Y')}</div>
-  </div>
-
 </div>
 
+<!-- ═══ SCOUTING REPORT ══════════════════════════════════════ -->
+<div class="sh">
+  <span class="sh-label">Scouting Report</span>
+  <span class="sh-pill">{pos_group.upper()}</span>
+</div>
+
+<div class="report-grid">
+  <div>
+    <div class="sidebar-label">Player Profile</div>
+    {bio_rows_html}
+    <div class="sidebar-label">Scout Rating</div>
+    {scout_html}
+  </div>
+  <div class="profile-cols">
+    {profile_html}
+  </div>
+</div>
+
+<!-- ═══ DATA & METRICS ═══════════════════════════════════════ -->
+<div class="sh">
+  <span class="sh-label">Data &amp; Metrics</span>
+  <span class="sh-note">{season_label} · Percentiles vs positional peers</span>
+</div>
+
+<div class="summary-bar">
+  <div class="summary-cell hl">
+    <div class="s-label">Matches</div>
+    <div class="s-value">{d['matches']}</div>
+  </div>
+  <div class="summary-cell hl">
+    <div class="s-label">Minutes</div>
+    <div class="s-value">{d['minutes']:,}</div>
+  </div>
+  <div class="summary-cell hl">
+    <div class="s-label">Goals</div>
+    <div class="s-value">{int(d['metrics'].get('goals', 0))}</div>
+  </div>
+  <div class="summary-cell hl">
+    <div class="s-label">Assists</div>
+    <div class="s-value">{int(d['metrics'].get('assists', 0))}</div>
+  </div>
+  <div class="summary-cell hl">
+    <div class="s-label">xA / 90</div>
+    <div class="s-value">{d['metrics'].get('xa_p90', 0):.2f}</div>
+  </div>
+</div>
+
+<div class="stat-grid">
+  {stat_cards_html}
+</div>
+
+<!-- ═══ PERFORMANCE RADAR ════════════════════════════════════ -->
+<div class="sh">
+  <span class="sh-label">Performance Radar</span>
+  <div class="radar-legend" style="margin:0; margin-left:auto;">
+    <div class="rl-item"><div class="rl-dot" style="background:#7c3aed"></div><span class="rl-label">Attacking</span></div>
+    <div class="rl-item"><div class="rl-dot" style="background:#9ca3af"></div><span class="rl-label">Distribution</span></div>
+    <div class="rl-item"><div class="rl-dot" style="background:#d97706"></div><span class="rl-label">Defensive</span></div>
+  </div>
+</div>
+
+<div class="radar-wrap">
+  <div class="radar-canvas-wrap">
+    <canvas id="radarChart" width="520" height="520"></canvas>
+  </div>
+  <div class="radar-table">
+    {self._render_radar_table(d['percentiles'])}
+  </div>
+</div>
+
+<!-- ═══ FOOTER ══════════════════════════════════════════════ -->
+<div class="footer">
+  <div class="footer-logo">Aegis Football Advisory Group</div>
+  <div class="footer-sub">Data: StatsBomb · MTFI Platform · {datetime.now().strftime('%B %Y')}</div>
+</div>
+
+</div>
 <script>
-{radar_html}
+{radar_js}
 </script>
 </body>
 </html>"""
-        return html
 
     def _render_bio_rows(self, d: Dict) -> str:
         rows = [
@@ -1069,67 +1163,81 @@ class PlayerDossierGenerator:
             ("Strong Foot",  d.get("strong_foot") or "—"),
             ("Club",         d.get("team") or "—"),
             ("Nationality",  d.get("nationality") or "—"),
-            ("Contract Exp.", d.get("contract_exp") or "—"),
+            ("Contract",     d.get("contract_exp") or "—"),
             ("TMV",          d.get("tmv") or "—"),
         ]
         html = ""
         for label, value in rows:
-            is_gold = label == "TMV"
-            val_class = 'gold' if is_gold else ''
-            html += f"""
-        <div class="sidebar-row">
-          <span class="sidebar-row-label">{label}</span>
-          <span class="sidebar-row-value {val_class}">{value}</span>
-        </div>"""
+            gold = "gold" if label == "TMV" else ""
+            html += (
+                f'<div class="bio-row">'
+                f'<span class="bio-row-key">{label}</span>'
+                f'<span class="bio-row-val {gold}">{value}</span>'
+                f'</div>'
+            )
+        return html
+
+    def _render_scout_ratings(self, scout_ratings: Dict) -> str:
+        # Colour scale for the fill bar based on score (1–10)
+        def bar_color(score):
+            if score >= 7:   return "#34d399"
+            if score >= 5:   return "#f59e0b"
+            return "#f87171"
+
+        html = '<div class="scout-ratings">'
+        for label, key, _ in SCOUT_RATING_AXES:
+            score = scout_ratings.get(key, 5.0)
+            pct   = (score / 10) * 100
+            color = bar_color(score)
+            html += (
+                f'<div class="sr-row">'
+                f'<div class="sr-header">'
+                f'<span class="sr-name">{label}</span>'
+                f'<span class="sr-score">{score:.1f}</span>'
+                f'</div>'
+                f'<div class="sr-track">'
+                f'<div class="sr-fill" style="width:{pct:.0f}%;background:{color}"></div>'
+                f'</div>'
+                f'</div>'
+            )
+        html += '</div>'
         return html
 
     def _render_stat_cards(self, metrics: Dict, percentiles: Dict) -> str:
         html = ""
         for key, label, category, _ in DOSSIER_METRICS:
-            val = metrics.get(key, 0.0)
-            pct = percentiles.get(key, 50)
+            val   = metrics.get(key, 0.0)
+            pct   = percentiles.get(key, 50)
             color = CATEGORY_COLORS[category]
-            suffix = "th" if pct not in (1, 21, 31, 41, 51, 61, 71, 81, 91) else ("st" if pct % 10 == 1 else "nd" if pct % 10 == 2 else "rd")
-            if pct == 1: suffix = "st"
-            elif pct == 2: suffix = "nd"
-            elif pct == 3: suffix = "rd"
+            pct_color = self._pct_color(pct)
+            suffix = self._ordinal(pct)
+            val_str = self._fmt_val(key, val)
 
-            # Format value
-            if key in ("cross_pct", "dribble_pct", "duels_won_pct"):
-                val_str = f"{val:.1f}%"
-            elif key in ("goals", "assists"):
-                val_str = str(int(val))
-            else:
-                val_str = f"{val:.2f}" if val < 10 else f"{val:.1f}"
-
-            html += f"""
-    <div class="stat-card stat-card--{category}" style="--cat-color:{color}">
-      <div class="stat-label">{label}</div>
-      <div class="stat-row">
-        <div class="stat-value">{val_str}</div>
-        <div class="stat-rank">{pct}{suffix}</div>
-      </div>
-      <div class="pbar-track">
-        <div class="pbar-fill" style="width:{pct}%"></div>
-      </div>
-    </div>"""
+            html += (
+                f'<div class="sc" style="--cat-color:{color}">'
+                f'<div class="sc-label">{label}</div>'
+                f'<div class="sc-main">'
+                f'<div class="sc-value">{val_str}</div>'
+                f'<div class="sc-pct" style="color:{pct_color}">{pct}{suffix}</div>'
+                f'</div>'
+                f'<div class="sc-bar"><div class="sc-bar-fill" style="width:{pct}%"></div></div>'
+                f'</div>'
+            )
         return html
 
-    def _render_scout_bars(self, scout_ratings: Dict) -> str:
-        labels = {k: l for l, k, _ in SCOUT_RATING_AXES}
-        html = '<div class="scout-bars">'
-        for label, key, _ in SCOUT_RATING_AXES:
-            score = scout_ratings.get(key, 5.0)
-            pct = (score / 10) * 100
-            html += f"""
-      <div class="scout-bar-row">
-        <div class="scout-bar-header">
-          <span class="scout-bar-name">{label}</span>
-          <span class="scout-bar-score">{score:.1f}</span>
-        </div>
-        <div class="scout-track"><div class="scout-fill" style="width:{pct:.0f}%"></div></div>
-      </div>"""
-        html += "</div>"
+    def _render_radar_table(self, percentiles: Dict) -> str:
+        html = ""
+        for key, label, category in RADAR_METRICS:
+            pct   = percentiles.get(key, 50)
+            color = CATEGORY_COLORS[category]
+            suffix = self._ordinal(pct)
+            pct_color = self._pct_color(pct)
+            html += (
+                f'<div class="radar-row">'
+                f'<span class="radar-metric" style="border-left:2px solid {color}33; padding-left:8px;">{label}</span>'
+                f'<span class="radar-pct" style="color:{pct_color}">{pct}{suffix}</span>'
+                f'</div>'
+            )
         return html
 
     def _render_profile_bullets(self, d: Dict) -> str:
@@ -1137,118 +1245,86 @@ class PlayerDossierGenerator:
         p = d["percentiles"]
 
         physical_bullets = [
-            f"<strong>{'Strong in the air' if p.get('aerial_ratio', 50) > 60 else 'Average aerially'}</strong> — wins {m.get('aerial_ratio', 0):.1f}% of aerial duels ({p.get('aerial_ratio', 50)}th percentile).",
-            f"Ball recovery rate of <strong>{m.get('recoveries_p90', 0):.2f} per 90</strong> — ranked {p.get('recoveries_p90', 50)}th percentile among positional peers.",
+            f"<strong>{'Strong in the air' if p.get('aerial_ratio', 50) > 60 else 'Average aerially'}</strong> — wins {m.get('aerial_ratio', 0):.1f}% of aerial duels ({p.get('aerial_ratio', 50)}{self._ordinal(p.get('aerial_ratio', 50))} percentile).",
+            f"Ball recovery rate of <strong>{m.get('recoveries_p90', 0):.2f} per 90</strong> — ranked {p.get('recoveries_p90', 50)}{self._ordinal(p.get('recoveries_p90', 50))} percentile among positional peers.",
         ]
-
         def_bullets = [
             f"Records <strong>{m.get('tackles_p90', 0):.2f} tackles</strong> and <strong>{m.get('interceptions_p90', 0):.2f} interceptions</strong> per 90 minutes.",
             f"Dribble success rate of <strong>{m.get('dribble_pct', 0):.1f}%</strong>, completing <strong>{m.get('dribbles_p90', 0):.2f} dribbles per 90</strong>.",
         ]
-
         off_bullets = [
             f"<strong>{m.get('chances_p90', 0):.2f} key passes per 90</strong> with {m.get('crosses_p90', 0):.2f} completed crosses ({m.get('cross_pct', 0):.1f}% success rate).",
             f"Contributes <strong>{int(m.get('goals', 0))} goals and {int(m.get('assists', 0))} assists</strong> — xA of {m.get('xa_p90', 0):.2f} per 90, npxG of {m.get('np_xg_p90', 0):.2f} per 90.",
         ]
 
-        return f"""
-      <div>
-        <div class="profile-col-title">Physical Profile</div>
-        {''.join(f'<div class="profile-bullet">{b}</div>' for b in physical_bullets)}
-      </div>
-      <div>
-        <div class="profile-col-title">Defensive Contribution</div>
-        {''.join(f'<div class="profile-bullet">{b}</div>' for b in def_bullets)}
-      </div>
-      <div>
-        <div class="profile-col-title">Offensive Contribution</div>
-        {''.join(f'<div class="profile-bullet">{b}</div>' for b in off_bullets)}
-      </div>"""
+        def col(title, bullets):
+            items = "".join(f'<div class="bullet">{b}</div>' for b in bullets)
+            return f'<div><div class="pcol-title">{title}</div>{items}</div>'
 
-    def _render_radar_labels(self, percentiles: Dict) -> str:
-        html = ""
-        for key, label, category in RADAR_METRICS:
-            pct = percentiles.get(key, 50)
-            color = CATEGORY_COLORS[category]
-            suffix = "th"
-            if pct % 10 == 1 and pct != 11: suffix = "st"
-            elif pct % 10 == 2 and pct != 12: suffix = "nd"
-            elif pct % 10 == 3 and pct != 13: suffix = "rd"
-            html += f"""
-      <div style="display:flex; justify-content:space-between; padding: 6px 0; border-bottom:1px solid #1a1a1a; align-items:center;">
-        <span style="font-size:11px; color:#666; width:120px;">{label}</span>
-        <span style="font-family:'Barlow Condensed',sans-serif; font-weight:700; font-size:16px; color:{color};">{pct}{suffix}</span>
-      </div>"""
-        return html
+        return (
+            col("Physical Profile", physical_bullets)
+            + col("Defensive Contribution", def_bullets)
+            + col("Offensive Contribution", off_bullets)
+        )
 
     def _render_radar_js(self, metrics: Dict, percentiles: Dict) -> str:
-        """Generate the JS radar chart via Canvas API."""
         labels = [label for _, label, _ in RADAR_METRICS]
         values = [percentiles.get(key, 50) for key, _, _ in RADAR_METRICS]
         colors = [CATEGORY_COLORS[cat] for _, _, cat in RADAR_METRICS]
 
-        labels_js = json.dumps(labels)
-        values_js = json.dumps(values)
-        colors_js = json.dumps(colors)
-
-        return f"""
-(function() {{
+        return f"""(function() {{
   const canvas = document.getElementById('radarChart');
   if (!canvas) return;
   const ctx = canvas.getContext('2d');
   const W = canvas.width, H = canvas.height;
   const cx = W / 2, cy = H / 2;
-  const R = Math.min(W, H) * 0.38;
-  const labels = {labels_js};
-  const values = {values_js};
-  const colors = {colors_js};
+  const R = Math.min(W, H) * 0.36;
+  const labels = {json.dumps(labels)};
+  const values = {json.dumps(values)};
+  const colors = {json.dumps(colors)};
   const n = labels.length;
-  const rings = [20, 40, 60, 80, 100];
 
-  ctx.clearRect(0, 0, W, H);
-
-  function angleOf(i) {{ return (Math.PI * 2 * i / n) - Math.PI / 2; }}
-  function point(i, val) {{
-    const a = angleOf(i);
-    const r = (val / 100) * R;
+  function angle(i) {{ return (Math.PI * 2 * i / n) - Math.PI / 2; }}
+  function pt(i, v) {{
+    const a = angle(i), r = (v / 100) * R;
     return [cx + Math.cos(a) * r, cy + Math.sin(a) * r];
   }}
 
-  // Rings
-  rings.forEach(ring => {{
+  // Background rings
+  [20,40,60,80,100].forEach(ring => {{
     ctx.beginPath();
     for (let i = 0; i < n; i++) {{
-      const [x, y] = point(i, ring);
-      i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+      const [x,y] = pt(i, ring);
+      i === 0 ? ctx.moveTo(x,y) : ctx.lineTo(x,y);
     }}
     ctx.closePath();
-    ctx.strokeStyle = '#1e1e1e';
-    ctx.lineWidth = 1;
+    ctx.strokeStyle = ring === 100 ? '#2a2a2a' : '#1a1a1a';
+    ctx.lineWidth = ring === 100 ? 1 : 0.5;
     ctx.stroke();
   }});
 
   // Spokes
   for (let i = 0; i < n; i++) {{
-    const [x, y] = point(i, 100);
+    const [x,y] = pt(i, 100);
     ctx.beginPath();
     ctx.moveTo(cx, cy);
     ctx.lineTo(x, y);
-    ctx.strokeStyle = '#222';
-    ctx.lineWidth = 1;
+    ctx.strokeStyle = '#1e1e1e';
+    ctx.lineWidth = 0.5;
     ctx.stroke();
   }}
 
-  // Colour segments
+  // Coloured segments
   for (let i = 0; i < n; i++) {{
-    const next = (i + 1) % n;
-    const [x0, y0] = point(i, values[i]);
-    const [x1, y1] = point(next, values[next]);
+    const j = (i + 1) % n;
+    const [x0,y0] = pt(i, values[i]);
+    const [x1,y1] = pt(j, values[j]);
     ctx.beginPath();
     ctx.moveTo(cx, cy);
     ctx.lineTo(x0, y0);
     ctx.lineTo(x1, y1);
     ctx.closePath();
-    ctx.fillStyle = colors[i] + '55';
+    ctx.fillStyle = colors[i] + '44';
     ctx.fill();
     ctx.strokeStyle = colors[i];
     ctx.lineWidth = 1.5;
@@ -1257,27 +1333,29 @@ class PlayerDossierGenerator:
 
   // Dots
   for (let i = 0; i < n; i++) {{
-    const [x, y] = point(i, values[i]);
+    const [x,y] = pt(i, values[i]);
     ctx.beginPath();
-    ctx.arc(x, y, 4, 0, Math.PI * 2);
+    ctx.arc(x, y, 3.5, 0, Math.PI * 2);
     ctx.fillStyle = colors[i];
     ctx.fill();
+    ctx.strokeStyle = '#0b0b0b';
+    ctx.lineWidth = 1;
+    ctx.stroke();
   }}
 
   // Labels
-  ctx.font = '600 10px Barlow, sans-serif';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   for (let i = 0; i < n; i++) {{
-    const a = angleOf(i);
-    const labelR = R + 22;
-    const x = cx + Math.cos(a) * labelR;
-    const y = cy + Math.sin(a) * labelR;
-    ctx.fillStyle = '#555';
+    const a = angle(i);
+    const r = R + 26;
+    const x = cx + Math.cos(a) * r;
+    const y = cy + Math.sin(a) * r;
+    ctx.font = '500 9.5px Barlow, sans-serif';
+    ctx.fillStyle = '#444';
     ctx.fillText(labels[i], x, y);
   }}
-}})();
-"""
+}})();"""
 
     def _not_found_html(self, player_name: str) -> str:
         return f"""<!DOCTYPE html><html><head><meta charset="UTF-8"/>
