@@ -1009,10 +1009,12 @@ def _run_single_statsbomb_analysis(
     legacy_results = {
         "manager": analyzer.target_manager or manager_name,
         "matches_analysed": manager_dna.get("matches_analysed", 0),
-        "primary_formation": (analyzer.target_formation
-                              if hasattr(analyzer, "target_formation")
-                              else manager_dna.get("formation_profile", {}).get("primary", "4-3-3")),
+        "primary_formation":     (analyzer.target_formation
+                                  if hasattr(analyzer, "target_formation")
+                                  else manager_dna.get("formation_profile", {}).get("primary", "4-3-3")),
+        "primary_formation_pct":  (_formation_data or {}).get("primary_pct", 0),
         "manager_formation":      _manager_formation,
+        "manager_formation_pct":  (_mgr_formation_data or {}).get("primary_pct", 0),
         "manager_prev_team":      (_mgr_formation_data or {}).get("source_team", ""),
         "formation_compatibility": _compatibility,
         "dual_ideal_xi":          _dual_xi,

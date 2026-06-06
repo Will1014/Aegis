@@ -1,0 +1,85 @@
+name: Pre-train MTFI Models
+
+# ─── Triggers ─────────────────────────────────────────────────────────────────
+on:
+  schedule:
+    # 5am UTC every day — models are fresh when the working day begins
+    - cron: "0 5 * * *"
+
+  # Manual trigger from the GitHub Actions UI (useful for first run / debugging)
+  workflow_dispatch:
+    inputs:
+      leagues:
+        description: "Space-separated league IDs to train (blank = all defaults)"
+        required: false
+        default: ""
+      season:
+        description: "Season ID (blank = all defaults)"
+        required: false
+        default: ""
+
+# ─── Permissions ──────────────────────────────────────────────────────────────
+permissions:
+  contents: write   # needed to commit updated model files back to the repo
+
+# ─── Job ──────────────────────────────────────────────────────────────────────
+jobs:
+  pretrain:
+    name: Train Manager DNA models
+    runs-on: ubuntu-latest
+    timeout-minutes: 120   # training all 6 combinations can take ~90 min
+
+    steps:
+      # 1. Checkout repo (with full history so we can push back)
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      # 2. Python setup
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      # 3. Install dependencies
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+      # 4. Create pretrained/ directory if it doesn't exist
+      - name: Ensure pretrained/ directory exists
+        run: mkdir -p pretrained
+
+      # 5. Run pre-training
+      - name: Pre-train models
+        env:
+          SB_USERNAME: ${{ secrets.SB_USERNAME }}
+          SB_PASSWORD: ${{ secrets.SB_PASSWORD }}
+        run: |
+          if [ -n "${{ github.event.inputs.leagues }}" ] && [ -n "${{ github.event.inputs.season }}" ]; then
+            # Manual run with specific combination
+            python -m aegis.pretrain \
+              --leagues ${{ github.event.inputs.leagues }} \
+              --season ${{ github.event.inputs.season }}
+          else
+            # Scheduled run — train all default combinations
+            python -m aegis.pretrain
+          fi
+
+      # 6. Commit and push updated model files
+      - name: Commit updated models
+        run: |
+          git config user.name  "Aegis Training Bot"
+          git config user.email "bot@aegis-mtfi.ai"
+          git add pretrained/
+          # Only commit if there are changes
+          if git diff --staged --quiet; then
+            echo "No model changes to commit."
+          else
+            git commit -m "chore: update pre-trained models [$(date -u '+%Y-%m-%d %H:%M UTC')]"
+            git push
+          fi

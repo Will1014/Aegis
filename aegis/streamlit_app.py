@@ -640,31 +640,6 @@ _default_base = (
 base_dir = _get_secret("BASE_DIR", _default_base)
 
 
-# ── Pre-trained model loader ──────────────────────────────────────────────────
-
-def _load_pretrained() -> dict | None:
-    """
-    Copy the master pre-trained model bundle to {base_dir}/training/.
-    The master model is trained on all leagues and all available seasons,
-    giving K-means the richest possible clustering population.
-    Returns metadata dict on success, None if no bundle exists yet.
-    """
-    try:
-        from aegis.pretrain import load_pretrained
-        return load_pretrained(base_dir)
-    except Exception:
-        return None
-
-
-def _pretrained_meta() -> dict | None:
-    """Return master model metadata without copying files."""
-    try:
-        from aegis.pretrain import master_meta
-        return master_meta()
-    except Exception:
-        return None
-
-
 # ══════════════════════════════════════════════════════════════
 # LOGIN SCREEN
 # ══════════════════════════════════════════════════════════════
@@ -830,8 +805,8 @@ with st.sidebar:
     season_label = st.selectbox("Season", list(SEASON_OPTIONS.keys()))
     season_id = SEASON_OPTIONS[season_label]
 
-    # Resolve training leagues first (needed for pretrained model check)
     with st.expander("⚙️ Advanced Options"):
+        train_model = st.checkbox("Train model", value=True)
         training_leagues = st.multiselect(
             "Training leagues (manager pool)",
             list(COMPETITION_OPTIONS.keys()),
@@ -843,18 +818,6 @@ with st.sidebar:
         visualize = st.checkbox("Generate HTML dashboard", value=True)
 
     training_league_ids = [COMPETITION_OPTIONS[l] for l in training_leagues]
-
-    # Load master pre-trained model (trained on all leagues × all seasons)
-    _pt_meta = _load_pretrained()
-    if _pt_meta:
-        _trained_at = _pt_meta.get("trained_at", "")[:10]
-        _n_profiles = _pt_meta.get("n_profiles", "")
-        _n_str = f" · {_n_profiles} profiles" if _n_profiles else ""
-        st.sidebar.success(f"✓ Model loaded ({_trained_at}{_n_str})")
-        train_model = False
-    else:
-        st.sidebar.caption("ℹ️ No pre-trained model yet — run `python -m aegis.pretrain` first.")
-        train_model = True
 
     st.divider()
 
@@ -1304,15 +1267,10 @@ if results_b is None and results_a is not None:
     # Single compact info line: fit · archetype · formation compatibility
     _fmt_badge = ""
     if compat_label:
-        _mgr_team_hint = f" · prev. {mgr_team}" if mgr_team else ""
-        _fmt_badge = (
-            f" &nbsp;·&nbsp; "
-            f"<span style='color:{compat_color}; font-weight:600;'>"
-            f"{club_fmt} → {mgr_fmt}</span> "
-            f"<span style='color:{compat_color};'>({compat_label})</span>"
-            f"<span style='color:#475569; font-size:.80rem;'>"
-            f"&nbsp;club shape → manager preferred{_mgr_team_hint}</span>"
-        )
+        _fmt_badge = (f" &nbsp;·&nbsp; "
+                      f"<span style='color:{compat_color}; font-weight:600;'>"
+                      f"{club_fmt} → {mgr_fmt}</span> "
+                      f"<span style='color:{compat_color};'>({compat_label})</span>")
     st.markdown(
         f"<div style='color:#64748b; font-size:.88rem; margin-bottom:1.4rem;'>"
         f"Avg Fit <strong style='color:#e0e4ec;'>{avg_fit:.1f}</strong>"
@@ -1383,15 +1341,10 @@ if results_b is None and results_a is not None:
                 st.markdown(metric_card(compat_label, "Formation Fit", "gradient"),
                             unsafe_allow_html=True)
             with fc3:
-                _club_pct = r0.get("primary_formation_pct", 0)
-                _club_sub = f"Club ({club_name})" + (f" · {_club_pct:.0f}% of matches" if _club_pct else "")
-                st.markdown(metric_card(club_fmt, _club_sub, "gradient"),
+                st.markdown(metric_card(club_fmt, "Club Shape", "gradient"),
                             unsafe_allow_html=True)
             with fc4:
-                _mgr_pct = r0.get("manager_formation_pct", 0)
-                _mgr_sub = (f"Manager preferred"
-                            + (f" · {mgr_team}" if mgr_team else "")
-                            + (f" · {_mgr_pct:.0f}% of matches" if _mgr_pct else ""))
+                _mgr_sub = f"Manager{(' · ' + mgr_team) if mgr_team else ''}"
                 st.markdown(metric_card(mgr_fmt, _mgr_sub, "orange"),
                             unsafe_allow_html=True)
             st.write("")
@@ -1435,7 +1388,7 @@ if results_b is None and results_a is not None:
                 st.caption("No players change classification between the two formations.")
 
         elif club_fmt == mgr_fmt:
-            # Same formation — show single pitch with source context
+            # Same formation — show single pitch
             xi_single = r0.get("ideal_xi", [])
             if xi_single:
                 _, _pc, _ = st.columns([1, 2, 1])
@@ -1444,21 +1397,7 @@ if results_b is None and results_a is not None:
                                                    title=f"{club_name} · {club_fmt}")
                     st.pyplot(fig_s, use_container_width=True)
                     plt.close(fig_s)
-
-            # Explain what each formation represents
-            _club_pct  = r0.get("primary_formation_pct", 0)
-            _mgr_pct   = r0.get("manager_formation_pct", 0)
-            _mgr_team  = r0.get("manager_prev_team", "")
-
-            _club_src = (f"**{club_name}** have historically played **{club_fmt}**"
-                         + (f" ({_club_pct:.0f}% of recent matches)" if _club_pct else "")
-                         + ".")
-            _mgr_src  = (f"**{mgr_name}**'s preferred formation"
-                         + (f", based on their tenure at {_mgr_team}," if _mgr_team else "")
-                         + f" is also **{mgr_fmt}**"
-                         + (f" ({_mgr_pct:.0f}% of matches)" if _mgr_pct else "")
-                         + ".")
-            st.markdown(f"{_club_src}  {_mgr_src}  No structural adaptation required.")
+            st.caption(f"Both use {club_fmt} — no structural adaptation required.")
 
         else:
             # Formations differ but dual XI data absent
