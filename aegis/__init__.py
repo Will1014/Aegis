@@ -856,6 +856,28 @@ def _run_single_statsbomb_analysis(
         if coach_name_override:
             dna_copy["manager"] = coach_name_override
         analyzer.set_target_manager_from_dna(dna_copy)
+    # ── Formation: compute from StatsBomb Lineups before ideal XI ──
+    # Requires dna_insights.py (Feature 3). Graceful fallback if absent.
+    try:
+        from aegis.dna_insights import compute_formation_tendency
+        import os as _os
+        _formation_data = compute_formation_tendency(
+            team_name=team_name,
+            competition_id=scenario.get("competition_id", 2),
+            season_id=scenario.get("season_id", 317),
+            sb_username=_os.environ.get("SB_USERNAME", ""),
+            sb_password=_os.environ.get("SB_PASSWORD", ""),
+        )
+        if _formation_data and _formation_data.get("primary"):
+            analyzer.target_formation = _formation_data["primary"]
+            print(f"  ✓ Formation: {analyzer.target_formation} "
+                  f"({_formation_data.get('primary_pct', 0):.0f}% of matches)")
+        else:
+            print("  ℹ Formation: defaulting to 4-3-3 (no lineups data)")
+    except Exception as _fe:
+        _formation_data = None
+        print(f"  ℹ Formation detection skipped: {_fe}")
+
     analyzer.calculate_fit_scores_from_profiles(
         squad_profiles, 
         club_name=team_name,
@@ -941,7 +963,9 @@ def _run_single_statsbomb_analysis(
     legacy_results = {
         "manager": analyzer.target_manager or manager_name,
         "matches_analysed": manager_dna.get("matches_analysed", 0),
-        "primary_formation": manager_dna.get("formation_profile", {}).get("primary", "4-3-3"),
+        "primary_formation": (analyzer.target_formation
+                              if hasattr(analyzer, "target_formation")
+                              else manager_dna.get("formation_profile", {}).get("primary", "4-3-3")),
         "dna_dimensions": dna_dimensions,
         "squad_summary": {
             "total": len(analyzer.squad_fit),

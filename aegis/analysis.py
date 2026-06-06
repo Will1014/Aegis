@@ -1821,6 +1821,8 @@ class SquadFitAnalyzer:
         self.squad_stats = []
         self.manager_pillar_scores = None  # 8-pillar scores from DNA
         self.league_percentiles = None     # Percentile distributions by position
+        self.target_formation = "4-3-3"   # Set by pipeline before _generate_ideal_xi()
+        self.target_formation = "4-3-3"   # Set by pipeline before _generate_ideal_xi()
     
     def load_model(self, verbose: bool = True) -> "SquadFitAnalyzer":
         """Load trained Manager DNA model."""
@@ -2698,21 +2700,34 @@ class SquadFitAnalyzer:
     def _generate_ideal_xi(self, verbose: bool = True):
         """Generate ideal starting XI based on fit scores and actual positions."""
         
-        # Define formation slots with position group and preferred positions
-        formation_slots = {
-            "GK": {"group": "GK", "pref": ["Goalkeeper"]},
-            "CB1": {"group": "DEF", "pref": ["Centre-Back"]},
-            "CB2": {"group": "DEF", "pref": ["Centre-Back"]},
-            "RB": {"group": "DEF", "pref": ["Right-Back", "Right Wing-Back"]},
-            "LB": {"group": "DEF", "pref": ["Left-Back", "Left Wing-Back"]},
-            "DM": {"group": "MID", "pref": ["Defensive Midfield", "Defensive Midfielder"]},
-            "CM": {"group": "MID", "pref": ["Central Midfield", "Central Midfielder", "Midfielder"]},
-            "AM": {"group": "MID", "pref": ["Attacking Midfield", "Attacking Midfielder"]},
-            "LW": {"group": "ATT", "pref": ["Left Winger", "Left Wing", "Left Midfield"]},
-            "RW": {"group": "ATT", "pref": ["Right Winger", "Right Wing", "Right Midfield"]},
-            "CF": {"group": "ATT", "pref": ["Centre-Forward", "Forward", "Striker", "Second Striker"]}
-        }
-        
+        # Load formation-specific slot config from formations.py.
+        # Falls back to 4-3-3 for unrecognised formations.
+        try:
+            from .formations import get_slot_config
+            _fmt_config = get_slot_config(self.target_formation)
+        except ImportError:
+            _fmt_config = None
+
+        if _fmt_config:
+            formation_slots = _fmt_config["slots"]
+            slot_order      = _fmt_config["slot_order"]
+        else:
+            # Legacy hardcoded 4-3-3 fallback
+            formation_slots = {
+                "GK":  {"group": "GK",  "pref": ["Goalkeeper"]},
+                "CB1": {"group": "DEF", "pref": ["Centre-Back"]},
+                "CB2": {"group": "DEF", "pref": ["Centre-Back"]},
+                "RB":  {"group": "DEF", "pref": ["Right-Back", "Right Wing-Back"]},
+                "LB":  {"group": "DEF", "pref": ["Left-Back", "Left Wing-Back"]},
+                "DM":  {"group": "MID", "pref": ["Defensive Midfield", "Defensive Midfielder"]},
+                "CM":  {"group": "MID", "pref": ["Central Midfield", "Central Midfielder", "Midfielder"]},
+                "AM":  {"group": "MID", "pref": ["Attacking Midfield", "Attacking Midfielder"]},
+                "LW":  {"group": "ATT", "pref": ["Left Winger", "Left Wing", "Left Midfield"]},
+                "RW":  {"group": "ATT", "pref": ["Right Winger", "Right Wing", "Right Midfield"]},
+                "CF":  {"group": "ATT", "pref": ["Centre-Forward", "Forward", "Striker", "Second Striker"]},
+            }
+            slot_order = ["GK", "LB", "CB1", "CB2", "RB", "DM", "CM", "AM", "LW", "CF", "RW"]
+
         self.ideal_xi = []
         used_players = set()
         unfilled_slots = []
@@ -2778,8 +2793,7 @@ class SquadFitAnalyzer:
                 })
                 used_players.add(best.name)
         
-        # Sort by slot order for consistent display
-        slot_order = ["GK", "LB", "CB1", "CB2", "RB", "DM", "CM", "AM", "LW", "CF", "RW"]
+        # Sort by slot order for consistent display (slot_order set above from formation config)
         self.ideal_xi.sort(key=lambda x: slot_order.index(x["slot"]) if x["slot"] in slot_order else 99)
         
         if verbose and self.ideal_xi:

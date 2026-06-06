@@ -184,6 +184,15 @@ class AegisVisualizer:
             print(f"  ✓ Loaded 8-pillar DNA dimensions ({len(dna_dimensions)} pillars)")
         else:
             print(f"  ⚠ No dna_dimensions found — radar will use defaults")
+
+        # Extract and normalise primary formation
+        try:
+            from .formations import normalize_formation as _nfmt
+            _raw_fmt = summary.get("primary_formation", "4-3-3")
+            formation = _nfmt(_raw_fmt)
+            print(f"  ✓ Formation: {formation}")
+        except ImportError:
+            formation = "4-3-3"
         
         # Generate HTML
         print("\n[3/3] Generating HTML...")
@@ -198,7 +207,8 @@ class AegisVisualizer:
             manager_name=manager_name,
             target_club=target_club,
             season=season,
-            dna_dimensions=dna_dimensions
+            dna_dimensions=dna_dimensions,
+            formation=formation,
         )
         
         # Save
@@ -256,7 +266,8 @@ class AegisVisualizer:
         manager_name: str,
         target_club: str,
         season: str,
-        dna_dimensions: Optional[Dict] = None
+        dna_dimensions: Optional[Dict] = None,
+        formation: str = "4-3-3",
     ) -> str:
         """Generate the MTFI Dashboard v2 HTML."""
         from datetime import datetime
@@ -303,14 +314,20 @@ class AegisVisualizer:
                 "classification": p.get("classification") or p.get("Classification", "Unknown")
             })
         
-        # Process ideal XI
-        pitch_positions = {
-            "GK": {"x": 50, "y": 90}, "LB": {"x": 15, "y": 68},
-            "CB1": {"x": 35, "y": 73}, "CB": {"x": 35, "y": 73}, "CB2": {"x": 65, "y": 73},
-            "RB": {"x": 85, "y": 68}, "DM": {"x": 50, "y": 52},
-            "CM": {"x": 30, "y": 40}, "AM": {"x": 70, "y": 40},
-            "LW": {"x": 15, "y": 22}, "CF": {"x": 50, "y": 15}, "RW": {"x": 85, "y": 22}
-        }
+        # Process ideal XI — use dynamic formation positions from formations.py
+        try:
+            from .formations import get_pitch_positions as _gpp
+            _raw_pos = _gpp(formation)
+            pitch_positions = {k: {"x": v[0], "y": v[1]} for k, v in _raw_pos.items()}
+        except ImportError:
+            # Fallback to legacy hardcoded 4-3-3
+            pitch_positions = {
+                "GK": {"x": 50, "y": 90}, "LB": {"x": 15, "y": 68},
+                "CB1": {"x": 35, "y": 73}, "CB": {"x": 35, "y": 73}, "CB2": {"x": 65, "y": 73},
+                "RB": {"x": 85, "y": 68}, "DM": {"x": 50, "y": 52},
+                "CM": {"x": 30, "y": 40}, "AM": {"x": 70, "y": 40},
+                "LW": {"x": 15, "y": 22}, "CF": {"x": 50, "y": 15}, "RW": {"x": 85, "y": 22},
+            }
         
         ideal_js = []
         cb_count = 0
@@ -1296,14 +1313,26 @@ ReactDOM.render(<MTFIDashboard />, document.getElementById('root'));
     # FORMATION USAGE
     # =========================================================================
     
-    def plot_formation_usage(self):
-        """Generate formation usage bar chart."""
-        # This would need formation data from manager_dna
-        # For now, create placeholder
+    def plot_formation_usage(self, formation_data: dict = None):
+        """Generate formation usage bar chart.
+        
+        Args:
+            formation_data: Dict from compute_formation_tendency() with 'raw_counts' key.
+                            If None, falls back to illustrative placeholder data.
+        """
         fig, ax = self.plt.subplots(figsize=(10, 6))
         
-        formations = ["4-3-3", "3-5-2", "4-2-3-1", "3-4-3", "5-3-2"]
-        usage = [39.5, 26.3, 17.1, 10.5, 6.6]  # Example
+        if formation_data and formation_data.get("raw_counts"):
+            from .formations import normalize_formation
+            raw = formation_data["raw_counts"]
+            top = sorted(raw.items(), key=lambda x: x[1], reverse=True)[:5]
+            total = sum(v for _, v in top)
+            formations = [normalize_formation(k) for k, _ in top]
+            usage = [round(v / max(total, 1) * 100, 1) for _, v in top]
+        else:
+            # Illustrative placeholder — replaced once formation_data flows through
+            formations = ["4-3-3", "3-5-2", "4-2-3-1", "3-4-3", "5-3-2"]
+            usage = [39.5, 26.3, 17.1, 10.5, 6.6]
         
         bars = ax.barh(formations, usage, color=self.COLORS["primary"])
         
