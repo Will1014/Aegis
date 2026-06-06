@@ -856,11 +856,19 @@ def _run_single_statsbomb_analysis(
         if coach_name_override:
             dna_copy["manager"] = coach_name_override
         analyzer.set_target_manager_from_dna(dna_copy)
-    # ── Formation: compute from StatsBomb Lineups before ideal XI ──
-    # Requires dna_insights.py (Feature 3). Graceful fallback if absent.
+    # ── Formation: compute club shape + manager historical shape ──────────
+    import os as _os
+    _formation_data      = None
+    _mgr_formation_data  = None
+    _compatibility       = {"score": 50, "label": "Unknown", "notes": []}
+    _dual_xi             = None
+    _manager_formation   = "4-3-3"
+
     try:
-        from aegis.dna_insights import compute_formation_tendency
-        import os as _os
+        from aegis.dna_insights import compute_formation_tendency, compute_manager_formation
+        from aegis.formations import compute_formation_compatibility
+
+        # 1. Club's current formation (from their recent matches)
         _formation_data = compute_formation_tendency(
             team_name=team_name,
             competition_id=scenario.get("competition_id", 2),
@@ -870,13 +878,39 @@ def _run_single_statsbomb_analysis(
         )
         if _formation_data and _formation_data.get("primary"):
             analyzer.target_formation = _formation_data["primary"]
-            print(f"  ✓ Formation: {analyzer.target_formation} "
+            print(f"  ✓ Club formation: {analyzer.target_formation} "
                   f"({_formation_data.get('primary_pct', 0):.0f}% of matches)")
         else:
-            print("  ℹ Formation: defaulting to 4-3-3 (no lineups data)")
+            print("  ℹ Club formation: defaulting to 4-3-3")
+
+        # 2. Manager's historical preferred formation (from their previous club)
+        _training_dir = getattr(analyzer, 'training_dir', None)
+        if _training_dir:
+            _mgr_formation_data = compute_manager_formation(
+                manager_name=manager_name,
+                training_dir=_training_dir,
+                training_league_ids=training_league_ids or [2],
+                season_id=scenario.get("season_id", 317),
+                sb_username=_os.environ.get("SB_USERNAME", ""),
+                sb_password=_os.environ.get("SB_PASSWORD", ""),
+            )
+        if _mgr_formation_data and _mgr_formation_data.get("primary"):
+            _manager_formation = _mgr_formation_data["primary"]
+            _src = _mgr_formation_data.get("source_team", "training data")
+            print(f"  ✓ Manager formation: {_manager_formation} "
+                  f"({_mgr_formation_data.get('primary_pct', 0):.0f}% "
+                  f"from {_src})")
+        else:
+            print("  ℹ Manager formation: insufficient history data")
+
+        # 3. Formation compatibility score
+        _compatibility = compute_formation_compatibility(
+            analyzer.target_formation, _manager_formation)
+        print(f"  ✓ Compatibility: {_compatibility['label']} "
+              f"({_compatibility['score']}/100)")
+
     except Exception as _fe:
-        _formation_data = None
-        print(f"  ℹ Formation detection skipped: {_fe}")
+        print(f"  ℹ Formation analysis skipped: {_fe}")
 
     analyzer.calculate_fit_scores_from_profiles(
         squad_profiles, 
@@ -884,6 +918,18 @@ def _run_single_statsbomb_analysis(
         league_player_stats=scenario.get("player_season_stats")
     )
     analyzer.save()
+
+    # ── Dual Ideal XI: generate for both formations if they differ ────────
+    try:
+        if _manager_formation and _manager_formation != analyzer.target_formation:
+            _dual_xi = analyzer.generate_dual_ideal_xi(
+                analyzer.target_formation, _manager_formation)
+            _n_changed = sum(1 for d in _dual_xi.get("formation_deltas", [])
+                             if d.get("classification_change"))
+            print(f"  ✓ Dual Ideal XI: {_n_changed} players change "
+                  f"classification between formations")
+    except Exception as _dfe:
+        print(f"  ℹ Dual Ideal XI skipped: {_dfe}")
     
     # ── Generate recruitment priorities + legacy JSON for visualiser ──
     position_groups = _dd(list)
@@ -966,6 +1012,10 @@ def _run_single_statsbomb_analysis(
         "primary_formation": (analyzer.target_formation
                               if hasattr(analyzer, "target_formation")
                               else manager_dna.get("formation_profile", {}).get("primary", "4-3-3")),
+        "manager_formation":      _manager_formation,
+        "manager_prev_team":      (_mgr_formation_data or {}).get("source_team", ""),
+        "formation_compatibility": _compatibility,
+        "dual_ideal_xi":          _dual_xi,
         "dna_dimensions": dna_dimensions,
         "squad_summary": {
             "total": len(analyzer.squad_fit),

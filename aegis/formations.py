@@ -292,3 +292,134 @@ def get_pitch_positions(formation: str) -> Dict[str, Tuple[int, int]]:
     """Return pitch position coordinates for a given formation, falling back to 4-3-3."""
     fmt = normalize_formation(formation)
     return FORMATION_PITCH_POSITIONS.get(fmt, FORMATION_PITCH_POSITIONS["4-3-3"])
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# FORMATION STRUCTURAL PROFILES
+# Used by compute_formation_compatibility() to assess tactical fit between
+# the club's current shape and the manager's preferred shape.
+# ─────────────────────────────────────────────────────────────────────────────
+
+FORMATION_PROFILES: Dict[str, Dict] = {
+    "4-3-3":   {"backs": 4, "wing_backs": False, "mids": 3, "att": 3,  "width": "wide"},
+    "4-2-3-1": {"backs": 4, "wing_backs": False, "mids": 5, "att": 1,  "width": "wide"},
+    "4-4-2":   {"backs": 4, "wing_backs": False, "mids": 4, "att": 2,  "width": "wide"},
+    "3-5-2":   {"backs": 3, "wing_backs": True,  "mids": 3, "att": 2,  "width": "very_wide"},
+    "3-4-3":   {"backs": 3, "wing_backs": True,  "mids": 2, "att": 3,  "width": "wide"},
+    "5-3-2":   {"backs": 5, "wing_backs": True,  "mids": 3, "att": 2,  "width": "narrow"},
+    "4-1-4-1": {"backs": 4, "wing_backs": False, "mids": 5, "att": 1,  "width": "wide"},
+    "4-4-1-1": {"backs": 4, "wing_backs": False, "mids": 4, "att": 2,  "width": "wide"},
+    "4-5-1":   {"backs": 4, "wing_backs": False, "mids": 5, "att": 1,  "width": "wide"},
+}
+
+_COMPATIBILITY_LABELS = [
+    (90, "Identical"),
+    (70, "Compatible"),
+    (45, "Adaptable"),
+    (0,  "Divergent"),
+]
+
+
+def compute_formation_compatibility(formation_a: str, formation_b: str) -> Dict:
+    """
+    Score how compatible two formations are from a squad-building perspective.
+
+    Returns:
+        {
+          'score':          0–100,
+          'label':          'Identical' | 'Compatible' | 'Adaptable' | 'Divergent',
+          'back_match':     bool,   — same number of central defenders
+          'wing_back_match': bool,  — both use / don't use wing-backs
+          'notes':          List[str],  — plain-English structural differences
+        }
+    """
+    fa = normalize_formation(formation_a)
+    fb = normalize_formation(formation_b)
+
+    if fa == fb:
+        return {
+            "score": 100, "label": "Identical",
+            "back_match": True, "wing_back_match": True,
+            "notes": [f"Both use a {fa} — no structural adaptation required."],
+        }
+
+    pa = FORMATION_PROFILES.get(fa, FORMATION_PROFILES.get("4-3-3"))
+    pb = FORMATION_PROFILES.get(fb, FORMATION_PROFILES.get("4-3-3"))
+
+    score = 0
+    notes: List[str] = []
+
+    # ── Defender count (most structurally significant) ──────────────────
+    back_match = pa["backs"] == pb["backs"]
+    if back_match:
+        score += 50
+    else:
+        diff = abs(pa["backs"] - pb["backs"])
+        score += max(0, 30 - diff * 10)
+        notes.append(
+            f"Defensive structure changes from {pa['backs']}-back to "
+            f"{pb['backs']}-back — requires positional conversion or recruitment."
+        )
+
+    # ── Wing-back requirement ────────────────────────────────────────────
+    wb_match = pa["wing_backs"] == pb["wing_backs"]
+    if wb_match:
+        score += 20
+    else:
+        score += 5
+        if pb["wing_backs"]:
+            notes.append(
+                "Manager's system requires wing-backs — current full-backs "
+                "must have the athleticism and crossing ability for the role."
+            )
+        else:
+            notes.append(
+                "Club uses wing-backs; manager's system uses conventional "
+                "full-backs — wing-backs may be redeployed as wide midfielders."
+            )
+
+    # ── Midfield density ─────────────────────────────────────────────────
+    mid_diff = abs(pa["mids"] - pb["mids"])
+    if mid_diff == 0:
+        score += 20
+    elif mid_diff == 1:
+        score += 13
+        notes.append("Minor midfield restructure required.")
+    elif mid_diff == 2:
+        score += 6
+        notes.append("Significant midfield restructure — one midfielder's role changes substantially.")
+    else:
+        notes.append("Major midfield overhaul required.")
+
+    # ── Attacking shape ──────────────────────────────────────────────────
+    att_diff = abs(pa["att"] - pb["att"])
+    if att_diff == 0:
+        score += 10
+    elif att_diff == 1:
+        score += 5
+        notes.append("Attacking personnel need minor positional adjustment.")
+    else:
+        notes.append("Attacking structure changes significantly — striker/winger balance shifts.")
+
+    # ── Label ────────────────────────────────────────────────────────────
+    label = "Divergent"
+    for threshold, lbl in _COMPATIBILITY_LABELS:
+        if score >= threshold:
+            label = lbl
+            break
+
+    if not notes:
+        notes.append(
+            f"Both formations share similar structural characteristics "
+            f"with minor positional adjustments required."
+        )
+
+    return {
+        "score":           min(score, 100),
+        "label":           label,
+        "back_match":      back_match,
+        "wing_back_match": wb_match,
+        "club_formation":  fa,
+        "mgr_formation":   fb,
+        "notes":           notes,
+    }

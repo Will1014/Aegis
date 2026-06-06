@@ -386,6 +386,127 @@ def render_shortlist_radar(ranked):
     return fig
 
 
+def _draw_pitch(ax):
+    """Draw a simple football pitch on a matplotlib axes."""
+    ax.set_facecolor("#2d5a27")
+    ax.set_xlim(0, 100)
+    ax.set_ylim(0, 100)
+    lw = 0.8
+    pc = "#ffffff"
+    import matplotlib.patches as mpatches
+    # Outer boundary
+    ax.add_patch(mpatches.Rectangle((5, 3), 90, 94, fill=False,
+                                     edgecolor=pc, linewidth=lw))
+    # Halfway line + centre circle
+    ax.plot([5, 95], [50, 50], color=pc, linewidth=lw)
+    ax.add_patch(mpatches.Circle((50, 50), 8, fill=False,
+                                  edgecolor=pc, linewidth=lw))
+    ax.plot(50, 50, 'o', color=pc, markersize=1.5)
+    # Own penalty box (top/GK end)
+    ax.add_patch(mpatches.Rectangle((25, 75), 50, 22, fill=False,
+                                     edgecolor=pc, linewidth=lw))
+    ax.add_patch(mpatches.Rectangle((37, 86), 26, 11, fill=False,
+                                     edgecolor=pc, linewidth=lw))
+    # Opposition penalty box (bottom)
+    ax.add_patch(mpatches.Rectangle((25, 3), 50, 22, fill=False,
+                                     edgecolor=pc, linewidth=lw))
+    ax.add_patch(mpatches.Rectangle((37, 3), 26, 11, fill=False,
+                                     edgecolor=pc, linewidth=lw))
+    ax.axis("off")
+
+
+_PITCH_CLS_COLORS = {
+    "Key Enabler":            "#34d399",
+    "Good Fit":               "#38bdf8",
+    "System Dependent":       "#fbbf24",
+    "Potentially Marginalised": "#f87171",
+}
+
+
+def render_formation_pitch(ideal_xi, formation, title=""):
+    """Render a single formation pitch diagram with colour-coded players."""
+    from aegis.formations import get_pitch_positions
+    import matplotlib.patches as mpatches
+
+    positions = get_pitch_positions(formation)
+    player_by_slot = {p["slot"]: p for p in ideal_xi}
+
+    fig, ax = plt.subplots(figsize=(4, 5.5))
+    fig.patch.set_facecolor("#0a0e17")
+    _draw_pitch(ax)
+
+    if title:
+        ax.set_title(title, color="#e0e4ec", fontsize=8,
+                     fontfamily="monospace", pad=4)
+
+    for slot, (px, py) in positions.items():
+        player = player_by_slot.get(slot)
+        if player:
+            color = _PITCH_CLS_COLORS.get(player["classification"], "#94a3b8")
+            # Last name only to fit in circle label
+            name = player["name"].split()[-1] if player.get("name") else slot
+            ax.add_patch(mpatches.Circle((px, py), 4.5, color=color, zorder=5))
+            ax.text(px, py - 7, name, ha="center", va="top",
+                    color="#e0e4ec", fontsize=5.5, fontweight="bold", zorder=6)
+        else:
+            ax.add_patch(mpatches.Circle((px, py), 4.5, color="#1e2a3a",
+                                          edgecolor="#475569", linewidth=0.8, zorder=5))
+            ax.text(px, py, slot, ha="center", va="center",
+                    color="#475569", fontsize=4.5, zorder=6)
+
+    ax.text(50, 1, formation, ha="center", va="bottom",
+            color="#94a3b8", fontsize=7, fontfamily="monospace")
+    plt.tight_layout(pad=0.3)
+    return fig
+
+
+def render_dual_formation_pitch(club_xi, manager_xi, club_fmt, mgr_fmt,
+                                 club_label="Club Shape",
+                                 mgr_label="Manager Preferred"):
+    """Render two formation pitches side by side."""
+    from aegis.formations import get_pitch_positions
+    import matplotlib.patches as mpatches
+
+    fig, axes = plt.subplots(1, 2, figsize=(9, 6))
+    fig.patch.set_facecolor("#0a0e17")
+
+    for ax, ideal_xi, formation, label in [
+        (axes[0], club_xi,    club_fmt, club_label),
+        (axes[1], manager_xi, mgr_fmt,  mgr_label),
+    ]:
+        _draw_pitch(ax)
+        ax.set_title(f"{label}\n{formation}", color="#e0e4ec",
+                     fontsize=8, fontfamily="monospace", pad=4)
+        positions = get_pitch_positions(formation)
+        player_by_slot = {p["slot"]: p for p in ideal_xi}
+
+        for slot, (px, py) in positions.items():
+            player = player_by_slot.get(slot)
+            if player:
+                color = _PITCH_CLS_COLORS.get(player["classification"], "#94a3b8")
+                name = player["name"].split()[-1] if player.get("name") else slot
+                ax.add_patch(mpatches.Circle((px, py), 4.5, color=color, zorder=5))
+                ax.text(px, py - 7, name, ha="center", va="top",
+                        color="#e0e4ec", fontsize=5, fontweight="bold", zorder=6)
+            else:
+                ax.add_patch(mpatches.Circle((px, py), 4.5, color="#1e2a3a",
+                                              edgecolor="#475569", linewidth=0.8, zorder=5))
+                ax.text(px, py, slot, ha="center", va="center",
+                        color="#475569", fontsize=4.5, zorder=6)
+
+    # Legend
+    legend_elements = [
+        mpatches.Patch(color=c, label=l)
+        for l, c in _PITCH_CLS_COLORS.items()
+    ]
+    fig.legend(handles=legend_elements, loc="lower center", ncol=4,
+               fontsize=6.5, labelcolor="#e0e4ec",
+               facecolor="#0f1520", edgecolor="#1e2a3a",
+               framealpha=0.8, bbox_to_anchor=(0.5, -0.01))
+    plt.tight_layout(pad=0.5)
+    return fig
+
+
 def render_radar(dna_a: dict, label_a: str = "Scenario A",
                  dna_b: dict = None, label_b: str = "Scenario B"):
     """Render one or two DNA profiles as an overlaid radar chart."""
@@ -1004,6 +1125,21 @@ if run_clicked:
         st.session_state.dashboards_a = dash_a
         st.session_state.analysis_a = analysis_a
         st.session_state.squad_a = squad_a
+
+        # Auto-generate narrative report (no button required)
+        if not is_compare:
+            try:
+                from aegis.ai_reporter import generate_narrative_report
+                _auto_report = generate_narrative_report(
+                    result     = res_a[0] if res_a else {},
+                    analysis   = analysis_a,
+                    squad      = squad_a,
+                    output_dir = Path(base_dir) / "outputs",
+                )
+                st.session_state.report_sections = _auto_report
+            except Exception:
+                st.session_state.report_sections = None
+
         status_a.update(
             label=f"✅ {'Scenario A' if is_compare else 'Analysis'} complete "
                   f"({len(res_a)} result{'s' if len(res_a) != 1 else ''})",
@@ -1093,141 +1229,279 @@ if run_clicked:
 results_a = st.session_state.results_a
 results_b = st.session_state.results_b
 
-if results_a is None:
-    st.info("Configure the analysis in the sidebar and press **Run Analysis**.")
+if results_a is None and not st.session_state.get("shortlist"):
+    st.markdown("""
+<div style="text-align:center; padding:80px 0;">
+  <div style="font-size:52px; margin-bottom:20px; opacity:0.18">⚽</div>
+  <div style="font-size:1rem; color:#64748b; margin-bottom:8px; letter-spacing:.04em;">
+      Select a league, team and manager in the sidebar, then press Run Analysis.
+  </div>
+</div>""", unsafe_allow_html=True)
     st.stop()
 
 
-if results_b is None:
-    # Single mode — the interactive dashboard has everything
-    for idx, r in enumerate(results_a):
-        manager = r.get("manager", "Unknown")
-        club = r.get("club", "Unknown")
+if results_b is None and results_a is not None:
+    r0        = results_a[0]
+    mgr_name  = r0.get("manager", "Unknown")
+    club_name = r0.get("club", "Unknown")
+    avg_fit   = r0.get("average_fit", 0)
+    archetype = r0.get("archetype", "—")
+    club_fmt  = r0.get("primary_formation", "4-3-3")
+    mgr_fmt   = r0.get("manager_formation", "4-3-3")
+    compat    = r0.get("formation_compatibility", {})
+    dual_data = r0.get("dual_ideal_xi")
+    mgr_team  = r0.get("manager_prev_team", "")
 
-        if len(results_a) > 1:
+    # ── Page header ───────────────────────────────────────────────────────────
+    compat_score = compat.get("score", 0)
+    compat_label = compat.get("label", "")
+    compat_color = ("#34d399" if compat_score >= 70 else
+                    "#fbbf24" if compat_score >= 45 else
+                    "#f87171" if compat_label else "#64748b")
+
+    st.markdown(
+        f"<h2 style='margin-bottom:2px;'>{mgr_name}"
+        f"<span style='color:#475569; font-weight:400'> → {club_name}</span></h2>",
+        unsafe_allow_html=True)
+
+    # Single compact info line: fit · archetype · formation compatibility
+    _fmt_badge = ""
+    if compat_label:
+        _fmt_badge = (f" &nbsp;·&nbsp; "
+                      f"<span style='color:{compat_color}; font-weight:600;'>"
+                      f"{club_fmt} → {mgr_fmt}</span> "
+                      f"<span style='color:{compat_color};'>({compat_label})</span>")
+    st.markdown(
+        f"<div style='color:#64748b; font-size:.88rem; margin-bottom:1.4rem;'>"
+        f"Avg Fit <strong style='color:#e0e4ec;'>{avg_fit:.1f}</strong>"
+        f"&nbsp;·&nbsp; {archetype}"
+        f"{_fmt_badge}</div>",
+        unsafe_allow_html=True)
+
+    # ── Tabs ──────────────────────────────────────────────────────────────────
+    tab_report, tab_formation, tab_dna, tab_squad, tab_dashboard = st.tabs([
+        "📋 Report", "⚽ Formation", "🧬 DNA Profile", "👥 Squad", "📊 Dashboard",
+    ])
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # TAB: REPORT
+    # ─────────────────────────────────────────────────────────────────────────
+    with tab_report:
+        _sec = st.session_state.get("report_sections")
+        if _sec:
+            _fmt_rpt = r0.get("primary_formation", "")
+            for _title, _body in _sec.items():
+                st.markdown(f"#### {_title}")
+                st.markdown(_body)
+                st.write("")
+
             st.divider()
-            st.markdown(f"### {manager} → {club}")
-
-    dashboards = st.session_state.dashboards_a
-    if dashboards:
-        if len(dashboards) > 1:
-            selected = st.selectbox("Dashboard", list(dashboards.keys()))
+            _dl1, _dl2, _dl3 = st.columns([1, 1, 2])
+            with _dl1:
+                try:
+                    from aegis.ai_reporter import export_pdf
+                    _pdf = export_pdf(_sec, mgr_name, club_name, _fmt_rpt)
+                    st.download_button("⬇️  PDF", data=_pdf,
+                        file_name=f"MTFI_{mgr_name.replace(' ','_')}.pdf",
+                        mime="application/pdf", key="dl_pdf_tab")
+                except ImportError:
+                    st.caption("reportlab required for PDF.")
+            with _dl2:
+                from aegis.ai_reporter import export_html
+                _html_r = export_html(_sec, mgr_name, club_name, _fmt_rpt)
+                st.download_button("⬇️  HTML", data=_html_r,
+                    file_name=f"MTFI_{mgr_name.replace(' ','_')}.html",
+                    mime="text/html", key="dl_html_tab")
         else:
-            selected = list(dashboards.keys())[0]
-        st.components.v1.html(dashboards[selected], height=900,
-                              scrolling=True)
-        st.download_button("⬇️  Download Dashboard",
-                           data=dashboards[selected],
-                           file_name=f"{selected}.html", mime="text/html")
-    else:
-        st.warning("Analysis complete but no dashboard was generated. "
-                   "Enable 'Generate HTML dashboard' in Advanced Options.")
+            # Fallback if auto-generation failed
+            st.caption("Report generation did not complete. Try re-running the analysis.")
+            if st.button("Retry report generation", type="secondary"):
+                from aegis.ai_reporter import generate_narrative_report
+                with st.spinner("Generating…"):
+                    st.session_state.report_sections = generate_narrative_report(
+                        result=r0, analysis=st.session_state.analysis_a,
+                        squad=st.session_state.squad_a,
+                        output_dir=Path(base_dir) / "outputs")
+                st.rerun()
 
-    # ── Narrative Report ──────────────────────────────────────────────────────
-    st.divider()
-    st.markdown("### 📄 Narrative Report")
+    # ─────────────────────────────────────────────────────────────────────────
+    # TAB: FORMATION
+    # ─────────────────────────────────────────────────────────────────────────
+    with tab_formation:
+        if compat_label and compat_label != "Unknown":
+            # ── Metric cards ─────────────────────────────────────────────────
+            fc1, fc2, fc3, fc4 = st.columns(4)
+            with fc1:
+                st.markdown(
+                    f'<div class="metric-card"><div class="value" '
+                    f'style="color:{compat_color};">{compat_score}</div>'
+                    f'<div class="label">Compatibility</div></div>',
+                    unsafe_allow_html=True)
+            with fc2:
+                st.markdown(metric_card(compat_label, "Formation Fit", "gradient"),
+                            unsafe_allow_html=True)
+            with fc3:
+                st.markdown(metric_card(club_fmt, "Club Shape", "gradient"),
+                            unsafe_allow_html=True)
+            with fc4:
+                _mgr_sub = f"Manager{(' · ' + mgr_team) if mgr_team else ''}"
+                st.markdown(metric_card(mgr_fmt, _mgr_sub, "orange"),
+                            unsafe_allow_html=True)
+            st.write("")
 
-    if st.button("Generate Report", type="secondary", key="gen_report"):
-        from aegis.ai_reporter import generate_narrative_report
-        with st.spinner("Generating report…"):
-            _sections = generate_narrative_report(
-                result     = results_a[0],
-                analysis   = st.session_state.analysis_a,
-                squad      = st.session_state.squad_a,
-                output_dir = Path(base_dir) / "outputs",
-            )
-        st.session_state.report_sections = _sections
+            # ── Notes ────────────────────────────────────────────────────────
+            for _note in compat.get("notes", []):
+                st.caption(f"ℹ️  {_note}")
 
-    if st.session_state.get("report_sections"):
-        _sec  = st.session_state.report_sections
-        _mgr  = results_a[0].get("manager", "")
-        _club = results_a[0].get("club", "")
-        _fmt  = st.session_state.analysis_a.get("primary_formation", "")
+            st.write("")
 
-        for _title, _content in _sec.items():
-            with st.expander(_title, expanded=True):
-                st.markdown(_content)
+        # ── Pitches ──────────────────────────────────────────────────────────
+        if dual_data:
+            xi_club = dual_data.get("ideal_xi_club", [])
+            xi_mgr  = dual_data.get("ideal_xi_manager", [])
+            c_fmt   = dual_data.get("club_formation", club_fmt)
+            m_fmt   = dual_data.get("manager_formation", mgr_fmt)
 
-        _dl1, _dl2 = st.columns(2)
-        with _dl1:
-            try:
-                from aegis.ai_reporter import export_pdf
-                _pdf = export_pdf(_sec, _mgr, _club, _fmt)
-                st.download_button(
-                    "⬇️  Download PDF", data=_pdf,
-                    file_name=f"MTFI_Report_{_mgr.replace(' ', '_')}.pdf",
-                    mime="application/pdf",
-                    key="dl_report_pdf",
+            if xi_club or xi_mgr:
+                fig_dual = render_dual_formation_pitch(
+                    xi_club, xi_mgr, c_fmt, m_fmt,
+                    club_label=f"{club_name}",
+                    mgr_label=f"{mgr_name} (preferred)",
                 )
-            except ImportError:
-                st.caption("Install reportlab>=4.0.0 to enable PDF export.")
-        with _dl2:
-            from aegis.ai_reporter import export_html
-            _html_report = export_html(_sec, _mgr, _club, _fmt)
-            st.download_button(
-                "⬇️  Download HTML", data=_html_report,
-                file_name=f"MTFI_Report_{_mgr.replace(' ', '_')}.html",
-                mime="text/html",
-                key="dl_report_html",
-            )
+                st.pyplot(fig_dual, use_container_width=True)
+                plt.close(fig_dual)
 
-    # ── DNA Insights ──────────────────────────────────────────────────────────
-    if st.session_state.analysis_a.get("dna_dimensions"):
-        with st.expander("🔬 DNA Insights", expanded=False):
-            from aegis.dna_insights import (
-                compute_manager_similarity,
-                compute_pillar_benchmarks,
-                compute_pillar_confidence,
-                compute_formation_tendency,
-            )
-            _r       = results_a[0]
-            _dna     = st.session_state.analysis_a.get("dna_dimensions", {})
-            _tr_dir  = Path(base_dir) / "training"
-            _cluster = _r.get("cluster", 0)
-
-            st.markdown("#### Tactically Similar Managers")
-            _similar = compute_manager_similarity(_r.get("manager", ""), _tr_dir)
-            if _similar:
-                st.dataframe(pd.DataFrame(_similar), hide_index=True,
-                             use_container_width=True)
+            # ── Transition risk table ─────────────────────────────────────────
+            deltas  = dual_data.get("formation_deltas", [])
+            changed = [d for d in deltas if d.get("classification_change")]
+            if changed:
+                st.markdown(f"**{len(changed)} player{'s' if len(changed)!=1 else ''} "
+                            f"change classification between {c_fmt} and {m_fmt}**")
+                st.dataframe(pd.DataFrame([{
+                    "Player":             d["name"],
+                    f"In {c_fmt}":        d["club_classification"],
+                    f"In {m_fmt}":        d["manager_classification"],
+                    "Signal":             d["risk"],
+                } for d in deltas]),
+                hide_index=True, use_container_width=True)
             else:
-                st.caption("Similarity data unavailable — training data required.")
+                st.caption("No players change classification between the two formations.")
 
-            st.markdown("#### Pillar vs Archetype Benchmark")
-            _benchmarks = compute_pillar_benchmarks(
-                _r.get("manager", ""), _cluster, _tr_dir, _dna)
-            if _benchmarks:
-                _bdf = pd.DataFrame(_benchmarks)[
-                    ["display_name", "score", "archetype_mean", "delta", "flag"]
-                ].rename(columns={
-                    "display_name": "Pillar", "score": "Score",
-                    "archetype_mean": "Archetype Mean",
-                    "delta": "Delta", "flag": "Signal",
-                })
-                st.dataframe(_bdf, hide_index=True, use_container_width=True)
+        elif club_fmt == mgr_fmt:
+            # Same formation — show single pitch
+            xi_single = r0.get("ideal_xi", [])
+            if xi_single:
+                _, _pc, _ = st.columns([1, 2, 1])
+                with _pc:
+                    fig_s = render_formation_pitch(xi_single, club_fmt,
+                                                   title=f"{club_name} · {club_fmt}")
+                    st.pyplot(fig_s, use_container_width=True)
+                    plt.close(fig_s)
+            st.caption(f"Both use {club_fmt} — no structural adaptation required.")
 
-            _conf = compute_pillar_confidence(_r, st.session_state.analysis_a)
-            st.caption(f"{_conf['badge']}  {_conf['confidence_note']}")
+        else:
+            # Formations differ but dual XI data absent
+            xi_single = r0.get("ideal_xi", [])
+            if xi_single:
+                _pc1, _pc2 = st.columns(2)
+                with _pc1:
+                    fig_c = render_formation_pitch(xi_single, club_fmt,
+                                                   title=f"{club_name} ({club_fmt})")
+                    st.pyplot(fig_c, use_container_width=True)
+                    plt.close(fig_c)
+                with _pc2:
+                    fig_m = render_formation_pitch(xi_single, mgr_fmt,
+                                                   title=f"{mgr_name} preferred ({mgr_fmt})")
+                    st.pyplot(fig_m, use_container_width=True)
+                    plt.close(fig_m)
 
-            st.markdown("#### Formation Tendency")
-            if has_creds:
-                @st.cache_data(ttl=3600 * 4, show_spinner=False)
-                def _cached_formation(team, comp_id, s_id, u, p):
-                    return compute_formation_tendency(team, comp_id, s_id, u, p)
+    # ─────────────────────────────────────────────────────────────────────────
+    # TAB: DNA PROFILE
+    # ─────────────────────────────────────────────────────────────────────────
+    with tab_dna:
+        dna = st.session_state.analysis_a.get("dna_dimensions", {})
+        if dna:
+            # Radar centred
+            _dc1, _dc2, _dc3 = st.columns([1, 2, 1])
+            with _dc2:
+                fig_r = render_radar(dna, label_a=mgr_name)
+                if fig_r:
+                    st.pyplot(fig_r, use_container_width=True)
+                    plt.close(fig_r)
 
-                _ft = _cached_formation(
-                    _r.get("club", ""), league_id_a, season_id, sb_user, sb_pass)
-                if _ft:
-                    _pri = f"**{_ft['primary']}** ({_ft['primary_pct']}%)"
-                    _sec_txt = (f"  ·  Secondary: **{_ft['secondary']}** "
-                                f"({_ft['secondary_pct']}%)"
-                                if _ft.get("secondary") else "")
-                    st.markdown(f"Primary: {_pri}{_sec_txt}"
-                                f"  ·  {_ft['matches_sampled']} matches sampled")
-                else:
-                    st.caption("Formation data unavailable.")
+            st.write("")
+            _tr_dir = Path(base_dir) / "training"
+            _cluster = r0.get("cluster", 0)
+
+            try:
+                from aegis.dna_insights import (
+                    compute_manager_similarity,
+                    compute_pillar_benchmarks,
+                    compute_pillar_confidence,
+                )
+                _col_sim, _col_bench = st.columns(2)
+
+                with _col_sim:
+                    st.markdown("**Tactically Similar Managers**")
+                    _similar = compute_manager_similarity(mgr_name, _tr_dir)
+                    if _similar:
+                        st.dataframe(pd.DataFrame(_similar)[
+                            ["manager", "team", "similarity_pct", "archetype"]
+                        ].rename(columns={"similarity_pct": "Similarity %",
+                                          "manager": "Manager", "team": "Club",
+                                          "archetype": "Archetype"}),
+                        hide_index=True, use_container_width=True)
+                    else:
+                        st.caption("Requires training data.")
+
+                with _col_bench:
+                    st.markdown("**Pillar vs Archetype**")
+                    _bench = compute_pillar_benchmarks(
+                        mgr_name, _cluster, _tr_dir, dna)
+                    if _bench:
+                        st.dataframe(pd.DataFrame(_bench)[
+                            ["display_name", "score", "archetype_mean", "delta", "flag"]
+                        ].rename(columns={"display_name": "Pillar",
+                                          "score": "Score",
+                                          "archetype_mean": "Avg",
+                                          "delta": "Δ",
+                                          "flag": "Signal"}),
+                        hide_index=True, use_container_width=True)
+
+                _conf = compute_pillar_confidence(r0, st.session_state.analysis_a)
+                st.caption(f"{_conf['badge']}  {_conf['confidence_note']}")
+
+            except Exception as _de:
+                st.caption(f"DNA insights unavailable: {_de}")
+        else:
+            st.caption("DNA dimensions not available for this analysis.")
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # TAB: SQUAD
+    # ─────────────────────────────────────────────────────────────────────────
+    with tab_squad:
+        render_metrics(r0, color_class="gradient")
+        st.write("")
+        render_squad_table(st.session_state.squad_a)
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # TAB: DASHBOARD
+    # ─────────────────────────────────────────────────────────────────────────
+    with tab_dashboard:
+        dashboards = st.session_state.dashboards_a
+        if dashboards:
+            if len(dashboards) > 1:
+                selected = st.selectbox("Dashboard", list(dashboards.keys()))
             else:
-                st.caption("StatsBomb credentials required for formation data.")
+                selected = list(dashboards.keys())[0]
+            st.download_button("⬇️  Download Dashboard",
+                               data=dashboards[selected],
+                               file_name=f"{selected}.html",
+                               mime="text/html", key="dl_dashboard")
+            st.components.v1.html(dashboards[selected], height=920, scrolling=True)
+        else:
+            st.caption("No dashboard generated. Enable 'Generate HTML dashboard' "
+                       "in Advanced Options and re-run.")
 
 
 # ══════════════════════════════════════════════════════════════

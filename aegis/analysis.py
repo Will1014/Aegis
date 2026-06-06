@@ -2800,6 +2800,101 @@ class SquadFitAnalyzer:
             avg_fit = sum(p["fit_score"] for p in self.ideal_xi) / len(self.ideal_xi)
             print(f"\n✓ Ideal XI average fit: {avg_fit:.1f}")
     
+
+    def generate_dual_ideal_xi(
+        self,
+        club_formation: str,
+        manager_formation: str,
+    ) -> dict:
+        """
+        Generate Ideal XIs for both the club's current formation and the
+        manager's preferred formation using the same squad fit scores.
+
+        Runs _generate_ideal_xi() twice with different formation configs and
+        computes a per-player classification delta to surface transition risk.
+
+        Returns:
+            {
+              'ideal_xi_club':     List[Dict],
+              'ideal_xi_manager':  List[Dict],
+              'club_formation':    str,
+              'manager_formation': str,
+              'formation_deltas':  List[Dict],  — players who change classification
+            }
+        """
+        from .formations import normalize_formation
+
+        club_fmt = normalize_formation(club_formation)
+        mgr_fmt  = normalize_formation(manager_formation)
+
+        # ── Club formation XI ─────────────────────────────────────────────
+        self.target_formation = club_fmt
+        self._generate_ideal_xi(verbose=False)
+        ideal_xi_club = list(self.ideal_xi)
+
+        # ── Manager formation XI ──────────────────────────────────────────
+        self.target_formation = mgr_fmt
+        self._generate_ideal_xi(verbose=False)
+        ideal_xi_manager = list(self.ideal_xi)
+
+        # Restore primary state (club formation is the base)
+        self.target_formation = club_fmt
+        self.ideal_xi = ideal_xi_club
+
+        # ── Player classification delta ───────────────────────────────────
+        club_map = {p["name"]: p for p in ideal_xi_club}
+        mgr_map  = {p["name"]: p for p in ideal_xi_manager}
+        all_names = sorted(set(club_map) | set(mgr_map))
+
+        CLS_RANK = {
+            "Key Enabler": 4,
+            "Good Fit": 3,
+            "System Dependent": 2,
+            "Potentially Marginalised": 1,
+            "Not Selected": 0,
+        }
+
+        deltas = []
+        for name in all_names:
+            c_entry = club_map.get(name, {})
+            m_entry = mgr_map.get(name, {})
+            c_cls  = c_entry.get("classification", "Not Selected")
+            m_cls  = m_entry.get("classification", "Not Selected")
+            c_slot = c_entry.get("slot", "—")
+            m_slot = m_entry.get("slot", "—")
+            c_rank = CLS_RANK.get(c_cls, 0)
+            m_rank = CLS_RANK.get(m_cls, 0)
+            diff   = m_rank - c_rank  # positive = improves under manager
+
+            if diff >= 2:   risk = "Significant Gain"
+            elif diff == 1: risk = "Gain"
+            elif diff == 0: risk = "Stable"
+            elif diff == -1: risk = "Risk"
+            else:           risk = "High Risk"
+
+            deltas.append({
+                "name":                   name,
+                "club_slot":              c_slot,
+                "club_classification":    c_cls,
+                "manager_slot":           m_slot,
+                "manager_classification": m_cls,
+                "classification_change":  diff != 0,
+                "risk":                   risk,
+            })
+
+        # Sort: changed players first, then by risk severity
+        risk_order = {"High Risk": 0, "Risk": 1, "Stable": 2, "Gain": 3, "Significant Gain": 4}
+        deltas.sort(key=lambda x: (not x["classification_change"],
+                                   risk_order.get(x["risk"], 2)))
+
+        return {
+            "ideal_xi_club":    ideal_xi_club,
+            "ideal_xi_manager": ideal_xi_manager,
+            "club_formation":   club_fmt,
+            "manager_formation": mgr_fmt,
+            "formation_deltas": deltas,
+        }
+
     def save(self, verbose: bool = True) -> "SquadFitAnalyzer":
         """Save analysis results."""
         self.output_dir.mkdir(parents=True, exist_ok=True)

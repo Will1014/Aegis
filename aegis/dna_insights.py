@@ -358,3 +358,69 @@ def compute_formation_tendency(
         "matches_sampled": total,
         "raw_counts":      raw_counts,
     }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 5. MANAGER HISTORICAL FORMATION
+# ─────────────────────────────────────────────────────────────────────────────
+
+def get_manager_previous_team(
+    manager_name: str,
+    training_dir,
+) -> Optional[str]:
+    """
+    Look up the team a manager was analysed against in the training data.
+    Returns the team_name string or None if not found.
+    """
+    import pandas as pd
+    training_dir = Path(training_dir)
+    profiles_path = training_dir / "manager_profiles.csv"
+    if not profiles_path.exists():
+        return None
+    df = pd.read_csv(profiles_path)
+    mask = df["coach_name"].str.contains(manager_name, case=False, na=False)
+    if not mask.any() and " " in manager_name:
+        mask = df["coach_name"].str.contains(
+            manager_name.split()[-1], case=False, na=False)
+    if not mask.any():
+        return None
+    return str(df[mask].iloc[0].get("team_name", ""))
+
+
+def compute_manager_formation(
+    manager_name: str,
+    training_dir,
+    training_league_ids: list,
+    season_id: int,
+    sb_username: str,
+    sb_password: str,
+    max_matches: int = 25,
+) -> Optional[Dict]:
+    """
+    Derive a manager's preferred formation from their previous club's matches.
+
+    Looks up the manager's previous team from manager_profiles.csv, then
+    calls compute_formation_tendency() against that team across all provided
+    training leagues until data is found.
+
+    Returns: same dict as compute_formation_tendency(), or None.
+    """
+    prev_team = get_manager_previous_team(manager_name, training_dir)
+    if not prev_team:
+        return None
+
+    for league_id in (training_league_ids or [2]):
+        result = compute_formation_tendency(
+            team_name=prev_team,
+            competition_id=league_id,
+            season_id=season_id,
+            sb_username=sb_username,
+            sb_password=sb_password,
+            max_matches=max_matches,
+        )
+        if result:
+            result["source_team"] = prev_team
+            result["source_league_id"] = league_id
+            return result
+
+    return None
