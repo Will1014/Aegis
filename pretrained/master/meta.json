@@ -1,0 +1,19 @@
+{
+  "key": "master",
+  "description": "All leagues \u00d7 all seasons",
+  "league_ids": [
+    2,
+    3,
+    4,
+    5,
+    6
+  ],
+  "season_ids": [
+    235,
+    281,
+    317,
+    318
+  ],
+  "n_profiles": 440,
+  "trained_at": "2026-06-06T14:12:46.908283+00:00"
+}
