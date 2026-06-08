@@ -860,9 +860,9 @@ def _run_single_statsbomb_analysis(
     import os as _os
     _formation_data      = None
     _mgr_formation_data  = None
-    _compatibility       = {"score": 50, "label": "Unknown", "notes": []}
+    _compatibility       = {}
     _dual_xi             = None
-    _manager_formation   = "4-3-3"
+    _manager_formation   = None   # None = not yet detected; never default silently
 
     try:
         from aegis.dna_insights import compute_formation_tendency, compute_manager_formation
@@ -901,7 +901,8 @@ def _run_single_statsbomb_analysis(
                   f"({_mgr_formation_data.get('primary_pct', 0):.0f}% "
                   f"from {_src})")
         else:
-            print("  ℹ Manager formation: insufficient history data")
+            _manager_formation = None
+            print("  ⚠ Manager formation: no data found — will show as unknown in UI")
 
         # 3. Formation compatibility score
         _compatibility = compute_formation_compatibility(
@@ -1009,11 +1010,11 @@ def _run_single_statsbomb_analysis(
     legacy_results = {
         "manager": analyzer.target_manager or manager_name,
         "matches_analysed": manager_dna.get("matches_analysed", 0),
-        "primary_formation":     (analyzer.target_formation
+        "primary_formation":     (analyzer.target_formation     # None if detection failed
                                   if hasattr(analyzer, "target_formation")
-                                  else manager_dna.get("formation_profile", {}).get("primary", "4-3-3")),
+                                  else manager_dna.get("formation_profile", {}).get("primary")),
         "primary_formation_pct":  (_formation_data or {}).get("primary_pct", 0),
-        "manager_formation":      _manager_formation,
+        "manager_formation":      _manager_formation,   # None if not found
         "manager_formation_pct":  (_mgr_formation_data or {}).get("primary_pct", 0),
         "manager_prev_team":      (_mgr_formation_data or {}).get("source_team", ""),
         "formation_compatibility": _compatibility,

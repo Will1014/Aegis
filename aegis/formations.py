@@ -61,28 +61,28 @@ _DISPLAY_TO_CANONICAL: Dict[str, str] = {
 }
 
 
-def normalize_formation(raw: str) -> str:
+def normalize_formation(raw) -> str | None:
     """
     Convert any formation string to a canonical display format.
 
     Handles StatsBomb compact strings ("433", "4231") and display strings
-    ("4-3-3", "4-2-3-1"). Falls back to "4-3-3" for unrecognised inputs.
+    ("4-3-3", "4-2-3-1"). Returns None for unrecognised or empty inputs
+    rather than defaulting silently — callers must handle None explicitly.
 
     Examples:
         normalize_formation("433")    → "4-3-3"
         normalize_formation("4231")   → "4-2-3-1"
         normalize_formation("4-3-3")  → "4-3-3"
-        normalize_formation("xyz")    → "4-3-3"
+        normalize_formation("xyz")    → None
+        normalize_formation(None)     → None
     """
     if not raw:
-        return "4-3-3"
+        return None
     s = str(raw).strip()
-    # Already canonical display format
     if s in _DISPLAY_TO_CANONICAL:
         return _DISPLAY_TO_CANONICAL[s]
-    # Compact numeric string (StatsBomb native)
     compact = s.replace("-", "").replace(" ", "")
-    return _FORMATION_MAP.get(compact, "4-3-3")
+    return _FORMATION_MAP.get(compact)   # None if not found
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -282,16 +282,35 @@ FORMATION_PITCH_POSITIONS: Dict[str, Dict[str, Tuple[int, int]]] = {
 }
 
 
-def get_slot_config(formation: str) -> Dict:
-    """Return slot config for a given formation, falling back to 4-3-3."""
-    fmt = normalize_formation(formation)
-    return FORMATION_SLOT_CONFIGS.get(fmt, FORMATION_SLOT_CONFIGS["4-3-3"])
+_INTERNAL_FALLBACK = "4-3-3"   # used only inside analysis.py/_generate_ideal_xi
 
 
-def get_pitch_positions(formation: str) -> Dict[str, Tuple[int, int]]:
-    """Return pitch position coordinates for a given formation, falling back to 4-3-3."""
+def get_slot_config(formation) -> Dict:
+    """
+    Return slot config for a given formation.
+    Falls back to 4-3-3 internally (required for _generate_ideal_xi to function),
+    but logs a warning so the caller knows the formation was unrecognised.
+    """
     fmt = normalize_formation(formation)
-    return FORMATION_PITCH_POSITIONS.get(fmt, FORMATION_PITCH_POSITIONS["4-3-3"])
+    if fmt is None:
+        import warnings
+        warnings.warn(
+            f"Formation '{formation}' not recognised — using 4-3-3 slot config internally. "
+            "Check that formation data was successfully retrieved from StatsBomb.",
+            stacklevel=2)
+        fmt = _INTERNAL_FALLBACK
+    return FORMATION_SLOT_CONFIGS.get(fmt, FORMATION_SLOT_CONFIGS[_INTERNAL_FALLBACK])
+
+
+def get_pitch_positions(formation) -> Dict[str, Tuple[int, int]]:
+    """
+    Return pitch position coordinates for a given formation.
+    Falls back to 4-3-3 internally with a warning if formation is unrecognised.
+    """
+    fmt = normalize_formation(formation)
+    if fmt is None:
+        fmt = _INTERNAL_FALLBACK
+    return FORMATION_PITCH_POSITIONS.get(fmt, FORMATION_PITCH_POSITIONS[_INTERNAL_FALLBACK])
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -336,6 +355,17 @@ def compute_formation_compatibility(formation_a: str, formation_b: str) -> Dict:
     fa = normalize_formation(formation_a)
     fb = normalize_formation(formation_b)
 
+    if fa is None or fb is None:
+        return {
+            "score": None, "label": "Unknown",
+            "back_match": None, "wing_back_match": None,
+            "club_formation": fa, "mgr_formation": fb,
+            "notes": [
+                "Formation data could not be retrieved from StatsBomb for one or both parties. "
+                "Check API connectivity and that match lineup data is available for the selected season."
+            ],
+        }
+
     if fa == fb:
         return {
             "score": 100, "label": "Identical",
@@ -343,8 +373,21 @@ def compute_formation_compatibility(formation_a: str, formation_b: str) -> Dict:
             "notes": [f"Both use a {fa} — no structural adaptation required."],
         }
 
-    pa = FORMATION_PROFILES.get(fa, FORMATION_PROFILES.get("4-3-3"))
-    pb = FORMATION_PROFILES.get(fb, FORMATION_PROFILES.get("4-3-3"))
+    # If formation not in profiles dict, score as unknown rather than assuming 4-3-3
+    if fa not in FORMATION_PROFILES or fb not in FORMATION_PROFILES:
+        return {
+            "score": None, "label": "Unknown",
+            "back_match": None, "wing_back_match": None,
+            "club_formation": fa, "mgr_formation": fb,
+            "notes": [
+                f"Formation profile data unavailable for "
+                f"{'club' if fa not in FORMATION_PROFILES else 'manager'} "
+                f"formation '{fa if fa not in FORMATION_PROFILES else fb}'. "
+                "Cannot compute structural compatibility."
+            ],
+        }
+    pa = FORMATION_PROFILES[fa]
+    pb = FORMATION_PROFILES[fb]
 
     score = 0
     notes: List[str] = []

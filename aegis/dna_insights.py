@@ -429,3 +429,140 @@ def compute_manager_formation(
             return result
 
     return None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 6. FORMATION HISTORY
+# ─────────────────────────────────────────────────────────────────────────────
+
+def compute_formation_history(
+    team_name: str,
+    competition_id: int,
+    season_id: int,
+    sb_username: str,
+    sb_password: str,
+    max_matches: int = 38,
+) -> Optional[Dict]:
+    """
+    Build a formation frequency distribution and match-by-match timeline
+    for a given team in a given competition/season.
+
+    Returns:
+        {
+          'team_name':       str,
+          'frequency':       {'4-3-3': 18, '4-2-3-1': 5, ...},  # raw counts
+          'frequency_pct':   {'4-3-3': 78, '4-2-3-1': 22, ...}, # percentages
+          'timeline':        [{'date': '2024-08-11', 'match': 'vs Chelsea',
+                               'formation': '4-3-3'}, ...],
+          'primary':         '4-3-3',    # most frequent
+          'primary_pct':     78,
+          'secondary':       '4-2-3-1',  # second most frequent (or None)
+          'secondary_pct':   22,
+          'matches_sampled': 23,
+        }
+        None if no data available.
+    """
+    import requests
+    from requests.auth import HTTPBasicAuth
+    from .formations import normalize_formation
+
+    if not sb_username or not sb_password:
+        return None
+
+    auth = HTTPBasicAuth(sb_username, sb_password)
+    base = "https://data.statsbombservices.com/api"
+
+    # ── 1. Fetch matches ───────────────────────────────────────────────────
+    try:
+        resp = requests.get(
+            f"{base}/v6/competitions/{competition_id}/seasons/{season_id}/matches",
+            auth=auth, timeout=30)
+        resp.raise_for_status()
+        all_matches = resp.json()
+    except Exception as e:
+        print(f"  ⚠ Formation history: could not fetch matches — {e}")
+        return None
+
+    # ── 2. Filter to target team, keeping date + opponent ─────────────────
+    team_matches = []
+    for m in all_matches:
+        home = m.get("home_team") or {}
+        away = m.get("away_team") or {}
+        h_name = home.get("home_team_name") or home.get("name") or ""
+        a_name = away.get("away_team_name") or away.get("name") or ""
+        is_home = team_name.lower() in h_name.lower()
+        is_away = team_name.lower() in a_name.lower()
+        if is_home or is_away:
+            opponent = a_name if is_home else h_name
+            team_matches.append({
+                "match_id":   m.get("match_id"),
+                "match_date": m.get("match_date", ""),
+                "opponent":   opponent,
+                "is_home":    is_home,
+            })
+        if len(team_matches) >= max_matches:
+            break
+
+    if not team_matches:
+        return None
+
+    # Sort chronologically
+    team_matches.sort(key=lambda x: x["match_date"])
+
+    # ── 3. Fetch lineups per match, extract starting formation ─────────────
+    frequency: Dict[str, int] = {}
+    timeline = []
+
+    for match in team_matches:
+        match_id = match["match_id"]
+        if not match_id:
+            continue
+        try:
+            lr = requests.get(f"{base}/v4/lineups/{match_id}",
+                              auth=auth, timeout=20)
+            lr.raise_for_status()
+            lineups = lr.json()
+        except Exception:
+            continue
+
+        for team_lineup in lineups:
+            t_name = (team_lineup.get("team_name") or
+                      (team_lineup.get("team") or {}).get("name") or "")
+            if team_name.lower() in t_name.lower():
+                for fobj in (team_lineup.get("formations") or []):
+                    if fobj.get("reason") == "Starting XI" and fobj.get("period", 1) == 1:
+                        raw_fmt = str(fobj.get("formation", "")).replace("-", "").strip()
+                        canonical = normalize_formation(raw_fmt)
+                        if canonical:
+                            frequency[canonical] = frequency.get(canonical, 0) + 1
+                            vs = ("vs" if match["is_home"] else "@")
+                            timeline.append({
+                                "date":      match["match_date"],
+                                "match":     f"{vs} {match['opponent']}",
+                                "formation": canonical,
+                            })
+                        break
+                break
+
+    if not frequency:
+        return None
+
+    total = sum(frequency.values())
+    freq_pct = {k: round(v / total * 100) for k, v in frequency.items()}
+    ranked = sorted(frequency.items(), key=lambda x: x[1], reverse=True)
+    primary = ranked[0][0]
+    primary_pct = freq_pct[primary]
+    secondary = ranked[1][0] if len(ranked) > 1 else None
+    secondary_pct = freq_pct.get(secondary, 0) if secondary else 0
+
+    return {
+        "team_name":       team_name,
+        "frequency":       frequency,
+        "frequency_pct":   freq_pct,
+        "timeline":        timeline,
+        "primary":         primary,
+        "primary_pct":     primary_pct,
+        "secondary":       secondary,
+        "secondary_pct":   secondary_pct,
+        "matches_sampled": total,
+    }

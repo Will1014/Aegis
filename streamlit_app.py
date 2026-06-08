@@ -668,6 +668,24 @@ def _pretrained_meta() -> dict | None:
         return None
 
 
+def _coaches_from_model() -> list:
+    """
+    Load all manager names from manager_profiles.csv in the master pre-trained model.
+    This covers ALL managers from ALL seasons × ALL leagues — not just the current season.
+    Falls back to empty list if the model hasn't been trained yet.
+    """
+    try:
+        from aegis.pretrain import MASTER_DIR
+        import pandas as pd
+        profiles_path = MASTER_DIR / "manager_profiles.csv"
+        if profiles_path.exists():
+            df = pd.read_csv(profiles_path)
+            return sorted(df["coach_name"].dropna().unique().tolist())
+    except Exception:
+        pass
+    return []
+
+
 # ══════════════════════════════════════════════════════════════
 # LOGIN SCREEN
 # ══════════════════════════════════════════════════════════════
@@ -873,17 +891,27 @@ with st.sidebar:
 
     st.divider()
 
-    # ── Discover ALL teams and managers across all licensed leagues ────────────
-    all_teams_map:  dict = {}   # team_name → league_id
-    all_mgrs_map:   dict = {}   # team_name → current manager name
-    all_coach_options: list = []
+    # ── Discover teams from API (for team→league auto-detect) ────────────────
+    all_teams_map: dict = {}   # team_name → league_id
+    all_mgrs_map:  dict = {}   # team_name → current manager name
 
     if has_creds:
         try:
-            all_teams_map, all_mgrs_map, all_coach_options = _discover_all(
+            all_teams_map, all_mgrs_map, _ = _discover_all(
                 sb_user, sb_pass, season_id, base_dir)
         except Exception:
             pass
+
+    # ── Load coaches from master model (all seasons × all leagues) ────────────
+    # This means managers from 2022/23 are available even when viewing 2024/25,
+    # enabling hypothetical cross-season, cross-league analysis.
+    all_coach_options = _coaches_from_model()
+    if not all_coach_options and has_creds:
+        # Fallback: discover from API if model not yet trained
+        try:
+            _, _, all_coach_options = _discover_all(sb_user, sb_pass, season_id, base_dir)
+        except Exception:
+            all_coach_options = []
 
     # ── Helper: render one scenario's inputs ──
     def _scenario_inputs(label: str, key_prefix: str, css_class: str):
@@ -1311,15 +1339,23 @@ if results_b is None and results_a is not None:
 
     # Single compact info line: fit · archetype · formation compatibility
     _fmt_badge = ""
-    if compat_label:
+    if compat_label and compat_label not in ("Unknown", ""):
         _mgr_team_hint = f" · prev. {mgr_team}" if mgr_team else ""
+        _c_disp = club_fmt or "?"
+        _m_disp = mgr_fmt  or "?"
         _fmt_badge = (
             f" &nbsp;·&nbsp; "
             f"<span style='color:{compat_color}; font-weight:600;'>"
-            f"{club_fmt} → {mgr_fmt}</span> "
+            f"{_c_disp} → {_m_disp}</span> "
             f"<span style='color:{compat_color};'>({compat_label})</span>"
             f"<span style='color:#475569; font-size:.80rem;'>"
             f"&nbsp;club shape → manager preferred{_mgr_team_hint}</span>"
+        )
+    elif not club_fmt or not mgr_fmt:
+        _fmt_badge = (
+            f" &nbsp;·&nbsp; "
+            f"<span style='color:#f87171; font-size:.80rem;'>"
+            f"⚠ Formation data unavailable</span>"
         )
     st.markdown(
         f"<div style='color:#64748b; font-size:.88rem; margin-bottom:1.4rem;'>"
@@ -1378,7 +1414,10 @@ if results_b is None and results_a is not None:
     # TAB: FORMATION
     # ─────────────────────────────────────────────────────────────────────────
     with tab_formation:
-        if compat_label and compat_label != "Unknown":
+        _club_pct = r0.get("primary_formation_pct", 0)
+        _mgr_pct  = r0.get("manager_formation_pct", 0)
+
+        if compat_label and compat_label not in ("Unknown", ""):
             # ── Metric cards ─────────────────────────────────────────────────
             fc1, fc2, fc3, fc4 = st.columns(4)
             with fc1:
@@ -1391,24 +1430,80 @@ if results_b is None and results_a is not None:
                 st.markdown(metric_card(compat_label, "Formation Fit", "gradient"),
                             unsafe_allow_html=True)
             with fc3:
-                _club_pct = r0.get("primary_formation_pct", 0)
-                _club_sub = f"Club ({club_name})" + (f" · {_club_pct:.0f}% of matches" if _club_pct else "")
-                st.markdown(metric_card(club_fmt, _club_sub, "gradient"),
+                _c_disp = club_fmt or "Unknown"
+                _club_sub = f"{club_name}" + (f" · {_club_pct:.0f}% of matches" if _club_pct else "")
+                st.markdown(metric_card(_c_disp, _club_sub, "gradient"),
                             unsafe_allow_html=True)
             with fc4:
-                _mgr_pct = r0.get("manager_formation_pct", 0)
-                _mgr_sub = (f"Manager preferred"
+                _m_disp = mgr_fmt or "Unknown"
+                _mgr_sub = ("Manager preferred"
                             + (f" · {mgr_team}" if mgr_team else "")
                             + (f" · {_mgr_pct:.0f}% of matches" if _mgr_pct else ""))
-                st.markdown(metric_card(mgr_fmt, _mgr_sub, "orange"),
+                st.markdown(metric_card(_m_disp, _mgr_sub, "orange"),
                             unsafe_allow_html=True)
             st.write("")
 
-            # ── Notes ────────────────────────────────────────────────────────
             for _note in compat.get("notes", []):
                 st.caption(f"ℹ️  {_note}")
-
             st.write("")
+
+        elif not club_fmt and not mgr_fmt:
+            st.warning("Formation data could not be retrieved from StatsBomb for this analysis. "
+                       "Check that lineup data is available for the selected team and season.")
+
+        # ── Formation history charts ──────────────────────────────────────────
+        from aegis.dna_insights import compute_formation_history
+
+        @st.cache_data(ttl=3600*4, show_spinner=False)
+        def _cached_history(team, comp_id, s_id, u, p):
+            return compute_formation_history(team, comp_id, s_id, u, p)
+
+        _hist_col1, _hist_col2 = st.columns(2)
+
+        def _render_history_chart(col, team, comp_id, label, color_hex):
+            with col:
+                st.markdown(f"**{label}**")
+                if not has_creds:
+                    st.caption("Credentials required.")
+                    return
+                _hist = _cached_history(team, comp_id, season_id, sb_user, sb_pass)
+                if not _hist:
+                    st.caption(f"No formation data found for {team} in this season.")
+                    return
+                # Frequency bar chart
+                _freq = _hist["frequency"]
+                _fmts = sorted(_freq.keys(), key=lambda x: _freq[x], reverse=True)
+                _vals = [_hist["frequency_pct"][f] for f in _fmts]
+                fig_h, ax_h = plt.subplots(figsize=(3.5, max(1.5, len(_fmts)*0.55)))
+                fig_h.patch.set_facecolor("#0a0e17")
+                ax_h.set_facecolor("#0f1520")
+                bars = ax_h.barh(_fmts, _vals, color=color_hex, alpha=0.85)
+                ax_h.set_xlabel("% of matches", color="#94a3b8", fontsize=7)
+                ax_h.tick_params(colors="#94a3b8", labelsize=7)
+                ax_h.spines[["top","right","bottom","left"]].set_visible(False)
+                ax_h.grid(axis="x", color="#1e2a3a", linewidth=0.5)
+                for bar, val in zip(bars, _vals):
+                    ax_h.text(val + 1, bar.get_y() + bar.get_height()/2,
+                              f"{val}%", va="center", color="#e0e4ec", fontsize=6.5)
+                plt.tight_layout(pad=0.4)
+                st.pyplot(fig_h, use_container_width=True)
+                plt.close(fig_h)
+                st.caption(f"{_hist['matches_sampled']} matches sampled")
+
+        _render_history_chart(
+            _hist_col1, club_name, league_id_a,
+            f"🏟 {club_name} — formation history", "#38bdf8")
+        if mgr_team and has_creds:
+            # Find the league for the manager's previous team
+            _mgr_comp = all_teams_map.get(mgr_team, league_id_a)
+            _render_history_chart(
+                _hist_col2, mgr_team, _mgr_comp,
+                f"👔 {mgr_name} at {mgr_team} — formation history", "#fb923c")
+        else:
+            with _hist_col2:
+                st.caption("Manager's previous club not identified in training data.")
+
+        st.write("")
 
         # ── Pitches ──────────────────────────────────────────────────────────
         if dual_data:
@@ -1442,7 +1537,7 @@ if results_b is None and results_a is not None:
             else:
                 st.caption("No players change classification between the two formations.")
 
-        elif club_fmt == mgr_fmt:
+        elif club_fmt and mgr_fmt and club_fmt == mgr_fmt:
             # Same formation — show single pitch with source context
             xi_single = r0.get("ideal_xi", [])
             if xi_single:
