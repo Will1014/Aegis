@@ -1164,18 +1164,17 @@ if run_clicked:
         st.session_state.squad_a = squad_a
 
         # Auto-generate narrative report (no button required)
-        if not is_compare:
-            try:
-                from aegis.ai_reporter import generate_narrative_report
-                _auto_report = generate_narrative_report(
-                    result     = res_a[0] if res_a else {},
-                    analysis   = analysis_a,
-                    squad      = squad_a,
-                    output_dir = Path(base_dir) / "outputs",
-                )
-                st.session_state.report_sections = _auto_report
-            except Exception:
-                st.session_state.report_sections = None
+        try:
+            from aegis.ai_reporter import generate_narrative_report
+            _auto_report = generate_narrative_report(
+                result     = res_a[0] if res_a else {},
+                analysis   = analysis_a,
+                squad      = squad_a,
+                output_dir = Path(base_dir) / "outputs",
+            )
+            st.session_state.report_sections = _auto_report
+        except Exception:
+            st.session_state.report_sections = None
 
         status_a.update(
             label=f"✅ {'Scenario A' if is_compare else 'Analysis'} complete "
@@ -1573,55 +1572,51 @@ elif results_b is not None:
     r_a = results_a[0]
     r_b = results_b[0]
 
-    mgr_a = r_a.get("manager", "Unknown")
-    mgr_b = r_b.get("manager", "Unknown")
+    mgr_a  = r_a.get("manager", "Unknown")
+    mgr_b  = r_b.get("manager", "Unknown")
     club_a = r_a.get("club", "Unknown")
     club_b = r_b.get("club", "Unknown")
-    fit_a = r_a.get("average_fit", 0)
-    fit_b = r_b.get("average_fit", 0)
+    fit_a  = r_a.get("average_fit", 0)
+    fit_b  = r_b.get("average_fit", 0)
     counts_a = r_a.get("classification_counts", {})
     counts_b = r_b.get("classification_counts", {})
 
-    # ── Headline ──
-    st.markdown("## Side-by-Side Comparison")
+    # ── Page header ───────────────────────────────────────────────────────────
+    st.markdown(
+        f"<h2 style='margin-bottom:2px;'>Comparison"
+        f"<span style='color:#475569; font-weight:400; font-size:.7em;'>"
+        f"  A: {mgr_a} → {club_a} &nbsp;·&nbsp; B: {mgr_b} → {club_b}"
+        f"</span></h2>",
+        unsafe_allow_html=True)
 
-    fit_diff = fit_a - fit_b
-    diff_sign = "+" if fit_diff > 0 else ""
-    diff_css = ("diff-positive" if fit_diff > 0
-                else "diff-negative" if fit_diff < 0
-                else "diff-neutral")
+    # Insight line
+    fit_diff   = fit_a - fit_b
+    diff_sign  = "+" if fit_diff > 0 else ""
+    diff_css   = ("diff-positive" if fit_diff > 0
+                  else "diff-negative" if fit_diff < 0 else "diff-neutral")
+    enabler_diff = counts_a.get("Key Enabler", 0) - counts_b.get("Key Enabler", 0)
+    margin_diff  = counts_a.get("Potentially Marginalised", 0) - counts_b.get("Potentially Marginalised", 0)
 
-    enabler_a = counts_a.get("Key Enabler", 0)
-    enabler_b = counts_b.get("Key Enabler", 0)
-    enabler_diff = enabler_a - enabler_b
-    margin_a = counts_a.get("Potentially Marginalised", 0)
-    margin_b = counts_b.get("Potentially Marginalised", 0)
-    margin_diff = margin_a - margin_b
-
-    insights = []
+    _insights = []
     if enabler_diff > 0:
-        insights.append(
-            f"**{mgr_a}** unlocks **{enabler_diff} more Key "
-            f"Enabler{'s' if enabler_diff != 1 else ''}** than {mgr_b}")
+        _insights.append(f"**{mgr_a}** unlocks **{enabler_diff} more Key "
+                         f"Enabler{'s' if enabler_diff != 1 else ''}** than {mgr_b}")
     elif enabler_diff < 0:
-        insights.append(
-            f"**{mgr_b}** unlocks **{abs(enabler_diff)} more Key "
-            f"Enabler{'s' if abs(enabler_diff) != 1 else ''}** than {mgr_a}")
-    if margin_diff > 0:
-        insights.append(
-            f"**{mgr_b}** marginalises **{abs(margin_diff)} fewer** "
-            f"player{'s' if abs(margin_diff) != 1 else ''}")
-    elif margin_diff < 0:
-        insights.append(
-            f"**{mgr_a}** marginalises **{abs(margin_diff)} fewer** "
-            f"player{'s' if abs(margin_diff) != 1 else ''}")
+        _insights.append(f"**{mgr_b}** unlocks **{abs(enabler_diff)} more Key "
+                         f"Enabler{'s' if abs(enabler_diff) != 1 else ''}** than {mgr_a}")
+    if margin_diff < 0:
+        _insights.append(f"**{mgr_a}** marginalises **{abs(margin_diff)} fewer** "
+                         f"player{'s' if abs(margin_diff) != 1 else ''}")
+    elif margin_diff > 0:
+        _insights.append(f"**{mgr_b}** marginalises **{abs(margin_diff)} fewer** "
+                         f"player{'s' if abs(margin_diff) != 1 else ''}")
+    if _insights:
+        st.markdown(
+            f"<div style='color:#64748b; font-size:.88rem; margin-bottom:1rem;'>"
+            + " &nbsp;·&nbsp; ".join(_insights) + "</div>",
+            unsafe_allow_html=True)
 
-    if insights:
-        st.markdown(" · ".join(insights))
-
-    st.write("")
-
-    # ── Delta summary row ──
+    # ── Delta summary row ─────────────────────────────────────────────────────
     dc = st.columns(4)
     with dc[0]:
         st.markdown(metric_card(f"{fit_a:.1f}", f"A: {mgr_a}", "gradient"),
@@ -1630,8 +1625,7 @@ elif results_b is not None:
         st.markdown(metric_card(f"{fit_b:.1f}", f"B: {mgr_b}", "orange"),
                     unsafe_allow_html=True)
     with dc[2]:
-        st.markdown(metric_card(f"{diff_sign}{fit_diff:.1f}",
-                                "Fit Δ (A − B)", diff_css),
+        st.markdown(metric_card(f"{diff_sign}{fit_diff:.1f}", "Fit Δ (A − B)", diff_css),
                     unsafe_allow_html=True)
     with dc[3]:
         winner = mgr_a if fit_a >= fit_b else mgr_b
@@ -1641,79 +1635,183 @@ elif results_b is not None:
 
     st.write("")
 
-    # ── Side-by-side metrics ──
-    col_a, col_b = st.columns(2)
+    # ── Tabs ──────────────────────────────────────────────────────────────────
+    ctab_report, ctab_formation, ctab_dna, ctab_squad, ctab_dashboard = st.tabs([
+        "📋 Reports", "⚽ Formation", "🧬 DNA Profile", "👥 Squad", "📊 Dashboard",
+    ])
 
-    with col_a:
-        st.markdown(
-            f'<span class="scenario-header scenario-a">'
-            f'A: {mgr_a} → {club_a}</span>',
-            unsafe_allow_html=True)
-        render_metrics(r_a, color_class="gradient")
+    # ─────────────────────────────────────────────────────────────────────────
+    # TAB: REPORTS
+    # ─────────────────────────────────────────────────────────────────────────
+    with ctab_report:
+        col_ra, col_rb = st.columns(2)
 
-    with col_b:
-        st.markdown(
-            f'<span class="scenario-header scenario-b">'
-            f'B: {mgr_b} → {club_b}</span>',
-            unsafe_allow_html=True)
-        render_metrics(r_b, color_class="orange")
+        def _render_report_col(col, result, analysis_snap, squad_snap, label, color):
+            mgr  = result.get("manager", "")
+            club = result.get("club", "")
+            fmt  = result.get("primary_formation", "")
+            key  = label.replace(" ", "_").lower()
+            with col:
+                st.markdown(
+                    f'<span class="scenario-header scenario-{color}">'
+                    f'{label}: {mgr}</span>',
+                    unsafe_allow_html=True)
+                sec = st.session_state.get(f"report_{key}")
+                if sec is None:
+                    try:
+                        from aegis.ai_reporter import generate_narrative_report
+                        with st.spinner("Generating…"):
+                            sec = generate_narrative_report(
+                                result=result, analysis=analysis_snap,
+                                squad=squad_snap,
+                                output_dir=Path(base_dir) / "outputs")
+                        st.session_state[f"report_{key}"] = sec
+                    except Exception as _re:
+                        st.caption(f"Report unavailable: {_re}")
+                        return
+                if sec:
+                    for _t, _body in sec.items():
+                        st.markdown(f"**{_t}**")
+                        st.markdown(_body)
+                        st.write("")
+                    st.divider()
+                    try:
+                        from aegis.ai_reporter import export_pdf
+                        _pdf = export_pdf(sec, mgr, club, fmt)
+                        st.download_button(f"⬇️  PDF — {mgr}", data=_pdf,
+                            file_name=f"MTFI_{mgr.replace(' ','_')}.pdf",
+                            mime="application/pdf", key=f"dl_pdf_{key}")
+                    except ImportError:
+                        pass
 
-    st.write("")
+        # Pre-populate from single-mode auto-generated report if available
+        if st.session_state.get("report_sections") and not st.session_state.get("report_a"):
+            st.session_state["report_a"] = st.session_state["report_sections"]
 
-    # ── Overlaid radar ──
-    dna_a = st.session_state.analysis_a.get("dna_dimensions", {})
-    dna_b = st.session_state.analysis_b.get("dna_dimensions", {})
+        _render_report_col(col_ra, r_a, st.session_state.analysis_a,
+                           st.session_state.squad_a, "a", "a")
+        _render_report_col(col_rb, r_b, st.session_state.analysis_b,
+                           st.session_state.squad_b, "b", "b")
 
-    if dna_a or dna_b:
-        st.markdown("### 🧬 DNA Radar — Overlay")
-        fig = render_radar(
-            dna_a or dna_b,
-            label_a=mgr_a,
-            dna_b=dna_b if dna_a else None,
-            label_b=mgr_b,
-        )
-        if fig:
+    # ─────────────────────────────────────────────────────────────────────────
+    # TAB: FORMATION
+    # ─────────────────────────────────────────────────────────────────────────
+    with ctab_formation:
+        _fa_col, _fb_col = st.columns(2)
+
+        def _render_formation_col(col, result, analysis_snap, label, color):
+            with col:
+                mgr   = result.get("manager", "")
+                club  = result.get("club", "")
+                c_fmt = result.get("primary_formation", "4-3-3")
+                m_fmt = result.get("manager_formation", "4-3-3")
+                c_pct = result.get("primary_formation_pct", 0)
+                m_pct = result.get("manager_formation_pct", 0)
+                m_tm  = result.get("manager_prev_team", "")
+                compat = result.get("formation_compatibility", {})
+                dual   = result.get("dual_ideal_xi")
+                c_lbl  = compat.get("label", "")
+                c_scr  = compat.get("score", 0)
+                c_clr  = ("#34d399" if c_scr >= 70 else
+                          "#fbbf24" if c_scr >= 45 else
+                          "#f87171" if c_lbl else "#64748b")
+
+                st.markdown(
+                    f'<span class="scenario-header scenario-{color}">'
+                    f'{label}: {mgr} → {club}</span>',
+                    unsafe_allow_html=True)
+
+                if c_lbl:
+                    fc1, fc2 = st.columns(2)
+                    with fc1:
+                        _cs = f"{c_fmt}" + (f" · {c_pct:.0f}%" if c_pct else "")
+                        st.markdown(metric_card(_cs, "Club shape", "gradient"),
+                                    unsafe_allow_html=True)
+                    with fc2:
+                        _ms = f"{m_fmt}" + (f" · {m_pct:.0f}%" if m_pct else "")
+                        _mt = f"Manager preferred{' · ' + m_tm if m_tm else ''}"
+                        st.markdown(metric_card(_ms, _mt, color),
+                                    unsafe_allow_html=True)
+                    st.markdown(
+                        f'<div style="font-size:.85rem; color:{c_clr}; '
+                        f'font-weight:600; margin:.5rem 0;">'
+                        f'{c_lbl} ({c_scr}/100)</div>',
+                        unsafe_allow_html=True)
+                    for note in compat.get("notes", []):
+                        st.caption(f"ℹ️  {note}")
+                    st.write("")
+
+                # Formation pitch
+                if dual:
+                    xi_c = dual.get("ideal_xi_club", [])
+                    xi_m = dual.get("ideal_xi_manager", [])
+                    if xi_c or xi_m:
+                        fig_d = render_dual_formation_pitch(
+                            xi_c, xi_m,
+                            dual.get("club_formation", c_fmt),
+                            dual.get("manager_formation", m_fmt),
+                            club_label=club, mgr_label=mgr)
+                        st.pyplot(fig_d, use_container_width=True)
+                        plt.close(fig_d)
+                else:
+                    xi = result.get("ideal_xi", [])
+                    if xi:
+                        fig_s = render_formation_pitch(xi, c_fmt,
+                                                       title=f"{club} ({c_fmt})")
+                        st.pyplot(fig_s, use_container_width=True)
+                        plt.close(fig_s)
+
+        _render_formation_col(_fa_col, r_a, st.session_state.analysis_a, "A", "a")
+        _render_formation_col(_fb_col, r_b, st.session_state.analysis_b, "B", "b")
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # TAB: DNA PROFILE
+    # ─────────────────────────────────────────────────────────────────────────
+    with ctab_dna:
+        dna_a = st.session_state.analysis_a.get("dna_dimensions", {})
+        dna_b = st.session_state.analysis_b.get("dna_dimensions", {})
+
+        if dna_a or dna_b:
             rc1, rc2, rc3 = st.columns([1, 2, 1])
             with rc2:
-                st.pyplot(fig)
-            plt.close(fig)
+                fig_r = render_radar(dna_a or dna_b, label_a=mgr_a,
+                                     dna_b=dna_b if dna_a else None, label_b=mgr_b)
+                if fig_r:
+                    st.pyplot(fig_r, use_container_width=True)
+                    plt.close(fig_r)
 
-            # Pillar-by-pillar diff table
             if dna_a and dna_b:
+                st.write("")
+                st.markdown("**Pillar comparison**")
                 pillar_rows = []
                 for pillar in dna_a:
                     va = dna_a[pillar]
                     vb = dna_b.get(pillar, 50)
-                    d = va - vb
+                    d  = va - vb
                     pillar_rows.append({
-                        "Pillar": pillar,
-                        f"{mgr_a} (A)": round(va, 1),
-                        f"{mgr_b} (B)": round(vb, 1),
-                        "Δ (A − B)": round(d, 1),
+                        "Pillar":          pillar,
+                        f"{mgr_a} (A)":    round(va, 1),
+                        f"{mgr_b} (B)":    round(vb, 1),
+                        "Δ (A − B)":       round(d, 1),
                     })
                 st.dataframe(pd.DataFrame(pillar_rows),
                              use_container_width=True, hide_index=True)
+        else:
+            st.caption("DNA dimensions unavailable.")
 
-    st.write("")
+    # ─────────────────────────────────────────────────────────────────────────
+    # TAB: SQUAD
+    # ─────────────────────────────────────────────────────────────────────────
+    with ctab_squad:
+        squad_a_data = st.session_state.squad_a
+        squad_b_data = st.session_state.squad_b
 
-    # ── Squad tables side by side ──
-    squad_a_data = st.session_state.squad_a
-    squad_b_data = st.session_state.squad_b
-
-    if squad_a_data or squad_b_data:
-        st.markdown("### 📋 Squad Fit Comparison")
-
-        # If same club, build a merged diff table
         if club_a == club_b and squad_a_data and squad_b_data:
-            st.caption(f"Same squad ({club_a}) — showing fit score change "
-                       f"under each manager")
+            st.caption(f"Same squad ({club_a}) — showing fit score change under each manager")
 
             def _to_df(data):
-                players = (data.get("players", data)
-                           if isinstance(data, dict) else data)
-                if isinstance(players, list) and players:
-                    return pd.DataFrame(players)
-                return pd.DataFrame()
+                players = data.get("players", data) if isinstance(data, dict) else data
+                return pd.DataFrame(players) if isinstance(players, list) and players else pd.DataFrame()
 
             df_a = _to_df(squad_a_data)
             df_b = _to_df(squad_b_data)
@@ -1723,108 +1821,79 @@ elif results_b is not None:
                     df_a[["player", "position", "fit_score", "classification"]],
                     df_b[["player", "fit_score", "classification"]],
                     on="player", how="outer",
-                    suffixes=(f" ({mgr_a})", f" ({mgr_b})"),
-                )
-
-                # Compute delta
-                col_fit_a = f"fit_score ({mgr_a})"
-                col_fit_b = f"fit_score ({mgr_b})"
-                if col_fit_a in merged.columns and col_fit_b in merged.columns:
-                    merged["Fit Δ"] = (
-                        merged[col_fit_a].fillna(0)
-                        - merged[col_fit_b].fillna(0)
-                    ).round(1)
+                    suffixes=(f" ({mgr_a})", f" ({mgr_b})"))
+                col_fa = f"fit_score ({mgr_a})"
+                col_fb = f"fit_score ({mgr_b})"
+                if col_fa in merged.columns and col_fb in merged.columns:
+                    merged["Fit Δ"] = (merged[col_fa].fillna(0) - merged[col_fb].fillna(0)).round(1)
                     merged = merged.sort_values("Fit Δ", ascending=False)
-
-                st.dataframe(merged, use_container_width=True,
-                             hide_index=True,
+                st.dataframe(merged, use_container_width=True, hide_index=True,
                              height=min(len(merged) * 38 + 40, 700))
 
-                # Winners / losers summary
                 if "Fit Δ" in merged.columns:
                     winners = merged[merged["Fit Δ"] > 2]
-                    losers = merged[merged["Fit Δ"] < -2]
-
-                    wl_cols = st.columns(2)
-                    with wl_cols[0]:
-                        st.markdown(
-                            f"<span style='color:#34d399; font-weight:700;'>"
-                            f"▲ {len(winners)} players gain ≥2 fit under "
-                            f"{mgr_a}</span>",
-                            unsafe_allow_html=True)
-                        if not winners.empty:
-                            top = winners.head(5)
-                            for _, row in top.iterrows():
-                                st.caption(
-                                    f"  {row['player']}: "
-                                    f"+{row['Fit Δ']:.1f}")
-
-                    with wl_cols[1]:
-                        st.markdown(
-                            f"<span style='color:#f87171; font-weight:700;'>"
-                            f"▼ {len(losers)} players lose ≥2 fit under "
-                            f"{mgr_a}</span>",
-                            unsafe_allow_html=True)
-                        if not losers.empty:
-                            bot = losers.tail(5)
-                            for _, row in bot.iterrows():
-                                st.caption(
-                                    f"  {row['player']}: "
-                                    f"{row['Fit Δ']:.1f}")
+                    losers  = merged[merged["Fit Δ"] < -2]
+                    wl1, wl2 = st.columns(2)
+                    with wl1:
+                        st.markdown(f"<span style='color:#34d399; font-weight:700;'>"
+                                    f"▲ {len(winners)} players gain ≥2 fit under {mgr_a}"
+                                    f"</span>", unsafe_allow_html=True)
+                        for _, row in winners.head(5).iterrows():
+                            st.caption(f"  {row['player']}: +{row['Fit Δ']:.1f}")
+                    with wl2:
+                        st.markdown(f"<span style='color:#f87171; font-weight:700;'>"
+                                    f"▼ {len(losers)} players lose ≥2 fit under {mgr_a}"
+                                    f"</span>", unsafe_allow_html=True)
+                        for _, row in losers.tail(5).iterrows():
+                            st.caption(f"  {row['player']}: {row['Fit Δ']:.1f}")
         else:
-            # Different clubs — show tables side by side
             sq_a, sq_b = st.columns(2)
             with sq_a:
-                st.markdown(
-                    f'<span class="scenario-header scenario-a">A: {club_a}'
-                    f'</span>', unsafe_allow_html=True)
+                st.markdown(f'<span class="scenario-header scenario-a">A: {club_a}</span>',
+                            unsafe_allow_html=True)
                 render_squad_table(squad_a_data, key_suffix="_cmp_a")
             with sq_b:
-                st.markdown(
-                    f'<span class="scenario-header scenario-b">B: {club_b}'
-                    f'</span>', unsafe_allow_html=True)
+                st.markdown(f'<span class="scenario-header scenario-b">B: {club_b}</span>',
+                            unsafe_allow_html=True)
                 render_squad_table(squad_b_data, key_suffix="_cmp_b")
 
-    # ── Recruitment comparison ──
-    rec_a = st.session_state.analysis_a.get("recruitment", [])
-    rec_b = st.session_state.analysis_b.get("recruitment", [])
-    if rec_a or rec_b:
-        st.markdown("### 🎯 Recruitment Priorities")
-        rc_a, rc_b = st.columns(2)
-        with rc_a:
-            st.markdown(
-                f'<span class="scenario-header scenario-a">A: {mgr_a}'
-                f'</span>', unsafe_allow_html=True)
-            if rec_a:
-                st.dataframe(pd.DataFrame(rec_a),
-                             use_container_width=True, hide_index=True)
-            else:
-                st.caption("No recruitment gaps identified.")
-        with rc_b:
-            st.markdown(
-                f'<span class="scenario-header scenario-b">B: {mgr_b}'
-                f'</span>', unsafe_allow_html=True)
-            if rec_b:
-                st.dataframe(pd.DataFrame(rec_b),
-                             use_container_width=True, hide_index=True)
-            else:
-                st.caption("No recruitment gaps identified.")
+        # Recruitment side by side
+        rec_a = st.session_state.analysis_a.get("recruitment", [])
+        rec_b = st.session_state.analysis_b.get("recruitment", [])
+        if rec_a or rec_b:
+            st.write("")
+            st.markdown("**Recruitment Priorities**")
+            rc_a, rc_b = st.columns(2)
+            with rc_a:
+                st.markdown(f'<span class="scenario-header scenario-a">A: {mgr_a}</span>',
+                            unsafe_allow_html=True)
+                st.dataframe(pd.DataFrame(rec_a), use_container_width=True,
+                             hide_index=True) if rec_a else st.caption("None identified.")
+            with rc_b:
+                st.markdown(f'<span class="scenario-header scenario-b">B: {mgr_b}</span>',
+                            unsafe_allow_html=True)
+                st.dataframe(pd.DataFrame(rec_b), use_container_width=True,
+                             hide_index=True) if rec_b else st.caption("None identified.")
 
-    # ── Dashboards ──
-    all_dashboards = {
-        **{f"A: {k}": v for k, v in st.session_state.dashboards_a.items()},
-        **{f"B: {k}": v for k, v in st.session_state.dashboards_b.items()},
-    }
-    if all_dashboards:
-        st.divider()
-        st.markdown("### 📊 Interactive Dashboards")
-        selected = st.selectbox("Dashboard", list(all_dashboards.keys()))
-        with st.expander("Open full dashboard", expanded=False):
-            st.components.v1.html(all_dashboards[selected], height=900,
-                                  scrolling=True)
-        st.download_button("⬇️  Download HTML",
-                           data=all_dashboards[selected],
-                           file_name=f"{selected}.html", mime="text/html")
+    # ─────────────────────────────────────────────────────────────────────────
+    # TAB: DASHBOARD
+    # ─────────────────────────────────────────────────────────────────────────
+    with ctab_dashboard:
+        all_dashboards = {
+            **{f"A: {k}": v for k, v in st.session_state.dashboards_a.items()},
+            **{f"B: {k}": v for k, v in st.session_state.dashboards_b.items()},
+        }
+        if all_dashboards:
+            _sel = st.selectbox("Select dashboard", list(all_dashboards.keys()),
+                                key="cmp_dash_sel")
+            st.download_button("⬇️  Download HTML",
+                               data=all_dashboards[_sel],
+                               file_name=f"{_sel}.html", mime="text/html",
+                               key="cmp_dl_dash")
+            st.components.v1.html(all_dashboards[_sel], height=920, scrolling=True)
+        else:
+            st.caption("No dashboards generated. Enable 'Generate HTML dashboard' "
+                       "in Advanced Options and re-run.")
 
 
 # ══════════════════════════════════════════════════════════════
