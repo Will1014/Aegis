@@ -324,10 +324,15 @@ def compute_formation_tendency(
             t_name = (team_lineup.get("team_name") or
                       (team_lineup.get("team") or {}).get("name") or "")
             if team_name.lower() in t_name.lower():
-                fmt = team_lineup.get("formation", "")
-                if fmt:
-                    key = str(fmt).replace("-", "").replace(" ", "")
-                    raw_counts[key] = raw_counts.get(key, 0) + 1
+                # StatsBomb Lineups v4: formations is an ARRAY of formation-change
+                # objects (not a top-level string). Pick the "Starting XI" entry
+                # from period 1 as the match's base formation.
+                for fobj in (team_lineup.get("formations") or []):
+                    if fobj.get("reason") == "Starting XI" and fobj.get("period", 1) == 1:
+                        fmt = str(fobj.get("formation", "")).replace("-", "").strip()
+                        if fmt:
+                            raw_counts[fmt] = raw_counts.get(fmt, 0) + 1
+                        break
                 break   # only need this team's lineup per match
 
     if not raw_counts:
