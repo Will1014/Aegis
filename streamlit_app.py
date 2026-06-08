@@ -135,6 +135,9 @@ SEASON_OPTIONS = {
     "2022/23": 235,
 }
 
+# All licensed league IDs — used for global team/manager discovery
+ALL_LEAGUE_IDS = list(COMPETITION_OPTIONS.values())  # [2, 3, 4, 5, 6]
+
 CLASSIFICATION_COLORS = {
     "Key Enabler": "#34d399",
     "Good Fit": "#38bdf8",
@@ -793,19 +796,37 @@ def discover_teams_and_managers(
     return team_names, manager_names, team_manager_map
 
 
-def _get_all_managers(sb_user, sb_pass, league_ids: list, season_id: int,
-                     base_dir: str = "") -> list:
-    """Get a de-duplicated sorted list of managers across multiple leagues."""
-    all_mgrs = set()
-    for lid in league_ids:
+def _discover_all(
+    sb_user: str, sb_pass: str, season_id: int, base_dir: str = ""
+) -> tuple:
+    """
+    Build global team→league and team→manager maps across ALL licensed leagues.
+    Returns (team_league_map, team_mgr_map, sorted_coach_list).
+
+    team_league_map: {team_name: league_id}   — used to auto-detect league from team
+    team_mgr_map:    {team_name: manager_name} — used to populate current-manager label
+    sorted_coach_list: sorted list of all known manager names
+
+    Builds on the cached discover_teams_and_managers() so repeated calls are cheap.
+    """
+    all_team_league: dict = {}
+    all_team_mgr:   dict = {}
+    all_coach_set:  set  = set()
+
+    for lid in ALL_LEAGUE_IDS:
         try:
-            _, mgrs, _ = discover_teams_and_managers(
-                sb_user, sb_pass, (lid,), season_id, base_dir,
-            )
-            all_mgrs.update(mgrs)
+            teams, mgrs, team_mgr_map = discover_teams_and_managers(
+                sb_user, sb_pass, (lid,), season_id, base_dir)
+            for t in teams:
+                # Earlier leagues take precedence if a team name clashes
+                if t not in all_team_league:
+                    all_team_league[t] = lid
+                all_team_mgr[t] = team_mgr_map.get(t, "Unknown")
+            all_coach_set.update(mgrs)
         except Exception:
             continue
-    return sorted(all_mgrs)
+
+    return all_team_league, all_team_mgr, sorted(all_coach_set)
 
 
 # ══════════════════════════════════════════════════════════════
@@ -830,26 +851,20 @@ with st.sidebar:
     season_label = st.selectbox("Season", list(SEASON_OPTIONS.keys()))
     season_id = SEASON_OPTIONS[season_label]
 
-    # Resolve training leagues first (needed for pretrained model check)
+    # Advanced Options — training leagues removed (master model covers all)
     with st.expander("⚙️ Advanced Options"):
-        training_leagues = st.multiselect(
-            "Training leagues (manager pool)",
-            list(COMPETITION_OPTIONS.keys()),
-            default=["Premier League"],
-            help="The model clusters managers from these leagues. "
-                 "More leagues = richer context for archetypes.",
-        )
         max_matches = st.slider("Max matches per team", 10, 50, 50)
         visualize = st.checkbox("Generate HTML dashboard", value=True)
 
-    training_league_ids = [COMPETITION_OPTIONS[l] for l in training_leagues]
+    # Always use all licensed leagues for the pipeline
+    training_league_ids = ALL_LEAGUE_IDS
 
     # Load master pre-trained model (trained on all leagues × all seasons)
     _pt_meta = _load_pretrained()
     if _pt_meta:
         _trained_at = _pt_meta.get("trained_at", "")[:10]
-        _n_profiles = _pt_meta.get("n_profiles", "")
-        _n_str = f" · {_n_profiles} profiles" if _n_profiles else ""
+        _n_pts = _pt_meta.get("n_profiles", "")
+        _n_str = f" · {_n_pts} data points" if _n_pts else ""
         st.sidebar.success(f"✓ Model loaded ({_trained_at}{_n_str})")
         train_model = False
     else:
@@ -858,65 +873,59 @@ with st.sidebar:
 
     st.divider()
 
-    # ── Discover managers across all training leagues (for coach dropdown) ──
-    all_coach_options = []
+    # ── Discover ALL teams and managers across all licensed leagues ────────────
+    all_teams_map:  dict = {}   # team_name → league_id
+    all_mgrs_map:   dict = {}   # team_name → current manager name
+    all_coach_options: list = []
+
     if has_creds:
         try:
-            all_coach_options = _get_all_managers(
-                sb_user, sb_pass, training_league_ids, season_id, base_dir)
+            all_teams_map, all_mgrs_map, all_coach_options = _discover_all(
+                sb_user, sb_pass, season_id, base_dir)
         except Exception:
-            all_coach_options = []
+            pass
 
     # ── Helper: render one scenario's inputs ──
     def _scenario_inputs(label: str, key_prefix: str, css_class: str):
         """
-        Render league → team → coach dropdowns for one scenario.
+        Render team → coach dropdowns for one scenario.
+        Teams are drawn from ALL licensed competitions — no league filter.
+        League is auto-detected from the selected team.
         Returns (league_id, team_name, coach_name).
         """
         st.markdown(
             f'<span class="scenario-header {css_class}">{label}</span>',
             unsafe_allow_html=True)
 
-        s_league = st.selectbox(
-            "League", list(COMPETITION_OPTIONS.keys()),
-            key=f"{key_prefix}_league",
-            help="The league this team plays in.")
-        s_league_id = COMPETITION_OPTIONS[s_league]
-
-        # Discover teams for the selected league
-        team_options = []
-        team_mgr_map = {}
-        if has_creds:
-            try:
-                teams, _, team_mgr_map = discover_teams_and_managers(
-                    sb_user, sb_pass, (s_league_id,), season_id, base_dir)
-                team_options = teams
-            except Exception as exc:
-                st.caption(f"⚠ Could not load teams: {exc}")
-
+        # Team selector — all teams from all leagues
+        team_options = sorted(all_teams_map.keys()) if all_teams_map else []
         if team_options:
             s_team = st.selectbox("Team", team_options,
                                   key=f"{key_prefix}_team")
-            current_mgr = team_mgr_map.get(s_team, "Unknown")
+            # Auto-detect league from the global map
+            s_league_id  = all_teams_map.get(s_team, ALL_LEAGUE_IDS[0])
+            current_mgr  = all_mgrs_map.get(s_team, "Unknown")
+            # Show which league the team plays in as a caption
+            league_name = next((k for k, v in COMPETITION_OPTIONS.items()
+                                if v == s_league_id), "Unknown League")
+            st.caption(f"🏟 {league_name}")
         else:
-            s_team = st.text_input("Team", key=f"{key_prefix}_team",
-                                   placeholder="Enter team name")
-            current_mgr = None
+            s_team       = st.text_input("Team", key=f"{key_prefix}_team",
+                                         placeholder="Enter team name")
+            s_league_id  = ALL_LEAGUE_IDS[0]
+            current_mgr  = None
 
-        # Coach dropdown: current manager + all known managers
+        # Coach dropdown: current manager + all known managers from all leagues
         coach_choices = [CURRENT_MANAGER_SENTINEL] + all_coach_options
         if current_mgr and current_mgr != "Unknown":
-            coach_label_default = (
-                f"{CURRENT_MANAGER_SENTINEL}  ({current_mgr})")
-            coach_choices[0] = coach_label_default
+            coach_choices[0] = f"{CURRENT_MANAGER_SENTINEL}  ({current_mgr})"
 
         s_coach_selection = st.selectbox(
             "Coach", coach_choices,
             key=f"{key_prefix}_coach",
             help="Pick 'Current manager' to analyse the incumbent, "
-                 "or select any manager for a hypothetical scenario.")
+                 "or select any manager from any league for a hypothetical scenario.")
 
-        # Resolve selection back to a name or None
         if CURRENT_MANAGER_SENTINEL in s_coach_selection:
             s_coach = None  # pipeline auto-detects
         else:
