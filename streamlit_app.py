@@ -1452,12 +1452,6 @@ if results_b is None and results_a is not None:
                        "Check that lineup data is available for the selected team and season.")
 
         # ── Formation history charts ──────────────────────────────────────────
-        from aegis.dna_insights import compute_formation_history
-
-        @st.cache_data(ttl=3600*4, show_spinner=False)
-        def _cached_history(team, comp_id, s_id, u, p):
-            return compute_formation_history(team, comp_id, s_id, u, p)
-
         _hist_col1, _hist_col2 = st.columns(2)
 
         def _render_history_chart(col, team, comp_id, label, color_hex):
@@ -1466,6 +1460,16 @@ if results_b is None and results_a is not None:
                 if not has_creds:
                     st.caption("Credentials required.")
                     return
+                try:
+                    from aegis.dna_insights import compute_formation_history as _cfh
+                except ImportError:
+                    st.caption("Formation history unavailable — push latest dna_insights.py.")
+                    return
+
+                @st.cache_data(ttl=3600*4, show_spinner=False)
+                def _cached_history(team, comp_id, s_id, u, p):
+                    return _cfh(team, comp_id, s_id, u, p)
+
                 _hist = _cached_history(team, comp_id, season_id, sb_user, sb_pass)
                 if not _hist:
                     st.caption(f"No formation data found for {team} in this season.")
