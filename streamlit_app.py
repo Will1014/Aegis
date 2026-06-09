@@ -279,12 +279,26 @@ def _run_with_progress(status_container, run_kwargs: dict):
         with open(analysis_path) as f:
             analysis_snapshot = json.load(f)
 
-    # Snapshot squad_fit_summary.json
+    # Snapshot squad data: summary JSON + full squad CSV merged together
     squad_path = output_dir / "squad_fit_summary.json"
     squad_snapshot = None
     if squad_path.exists():
         with open(squad_path) as f:
             squad_snapshot = json.load(f)
+
+    # Also load squad_fit_scores.csv (full squad, all players)
+    csv_path = output_dir / "squad_fit_scores.csv"
+    if csv_path.exists():
+        import csv as _csv
+        with open(csv_path, newline="") as f:
+            _rows = list(_csv.DictReader(f))
+        for r in _rows:
+            if "fit_score" in r:
+                try: r["fit_score"] = float(r["fit_score"])
+                except (ValueError, TypeError): pass
+        if squad_snapshot is None:
+            squad_snapshot = {}
+        squad_snapshot["squad_fit"] = _rows   # full squad list
 
     return result, dashboards, analysis_snapshot, squad_snapshot
 
@@ -335,6 +349,19 @@ def _run_cached(
     if squad_path.exists():
         with open(squad_path) as f:
             squad_snapshot = json.load(f)
+
+    csv_path = output_dir / "squad_fit_scores.csv"
+    if csv_path.exists():
+        import csv as _csv
+        with open(csv_path, newline="") as f:
+            _rows = list(_csv.DictReader(f))
+        for r in _rows:
+            if "fit_score" in r:
+                try: r["fit_score"] = float(r["fit_score"])
+                except (ValueError, TypeError): pass
+        if squad_snapshot is None:
+            squad_snapshot = {}
+        squad_snapshot["squad_fit"] = _rows
 
     return result, dashboards, analysis_snapshot, squad_snapshot
 
@@ -603,16 +630,21 @@ def render_squad_detail_table(squad_data, ideal_xi=None, key_suffix=""):
 
     df = pd.DataFrame(players).copy()
 
+    # ── Normalise name column immediately (before anything else) ──────────────
+    # squad_fit_scores.csv and ideal_xi both use "name"; normalise to "player"
+    if "name" in df.columns and "player" not in df.columns:
+        df = df.rename(columns={"name": "player"})
+
     # ── Build ideal XI slot map ───────────────────────────────────────────────
     xi_slots = {}
     if ideal_xi:
         for p in (ideal_xi if isinstance(ideal_xi, list) else []):
-            name = (p.get("name") or p.get("player") or "") if isinstance(p, dict) else ""
-            slot = p.get("slot", "") if isinstance(p, dict) else ""
-            if name and slot:
-                xi_slots[name] = slot
+            pname = (p.get("name") or p.get("player") or "") if isinstance(p, dict) else ""
+            slot  = p.get("slot", "") if isinstance(p, dict) else ""
+            if pname and slot:
+                xi_slots[pname] = slot
 
-    # ── Classification emoji ──────────────────────────────────────────────────
+    # ── Add derived columns ───────────────────────────────────────────────────
     CLS_EMOJI = {
         "Key Enabler":             "🟢",
         "Good Fit":                "🟡",
@@ -622,6 +654,9 @@ def render_squad_detail_table(squad_data, ideal_xi=None, key_suffix=""):
     if "classification" in df.columns:
         df["Status"] = df["classification"].map(
             lambda c: f"{CLS_EMOJI.get(c, '⚪')} {c}" if pd.notna(c) else "⚪ Unknown")
+
+    if xi_slots and "player" in df.columns:
+        df["Ideal XI"] = df["player"].map(lambda n: xi_slots.get(n, "—"))
 
     # ── Classification filter ─────────────────────────────────────────────────
     _cls_col = "classification" if "classification" in df.columns else None
@@ -635,14 +670,6 @@ def render_squad_detail_table(squad_data, ideal_xi=None, key_suffix=""):
                          horizontal=True, key=f"squad_filter{key_suffix}")
 
     _disp = df if _selected == "All" else df[df[_cls_col] == _selected]
-
-    # Normalise name column — pipeline uses "name" or "player"
-    if "name" in df.columns and "player" not in df.columns:
-        df = df.rename(columns={"name": "player"})
-    if "player" in df.columns and "Status" in df.columns:
-        df = df.copy()   # avoid SettingWithCopyWarning
-    if xi_slots and "player" in df.columns:
-        df["Ideal XI"] = df["player"].map(lambda n: xi_slots.get(n, "—"))
 
     # ── Column selection + rename ─────────────────────────────────────────────
     _col_map = {
