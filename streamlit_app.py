@@ -2260,13 +2260,17 @@ elif results_b is not None:
             with rc_a:
                 st.markdown(f'<span class="scenario-header scenario-a">A: {mgr_a}</span>',
                             unsafe_allow_html=True)
-                st.dataframe(pd.DataFrame(rec_a), use_container_width=True,
-                             hide_index=True) if rec_a else st.caption("None identified.")
+                if rec_a:
+                    st.dataframe(pd.DataFrame(rec_a), use_container_width=True, hide_index=True)
+                else:
+                    st.caption("None identified.")
             with rc_b:
                 st.markdown(f'<span class="scenario-header scenario-b">B: {mgr_b}</span>',
                             unsafe_allow_html=True)
-                st.dataframe(pd.DataFrame(rec_b), use_container_width=True,
-                             hide_index=True) if rec_b else st.caption("None identified.")
+                if rec_b:
+                    st.dataframe(pd.DataFrame(rec_b), use_container_width=True, hide_index=True)
+                else:
+                    st.caption("None identified.")
 
     # ─────────────────────────────────────────────────────────────────────────
     # TAB: DASHBOARD

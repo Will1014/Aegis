@@ -104,14 +104,12 @@ def run_shortlist(
 def _build_entry(provisional_rank: int, manager: str, result: Dict) -> ShortlistEntry:
     """Construct a ShortlistEntry from a pipeline result dict."""
     counts = result.get("classification_counts", {})
-    dna    = result.get("manager_dna", {})
 
-    # DNA dimensions — try manager_pillar_scores path or dna_dimensions key
+    # dna_dimensions is at the top level of legacy_results
     dna_dims: Dict[str, float] = {}
-    if isinstance(dna, dict):
-        ps = dna.get("pillar_scores") or dna.get("dna_dimensions") or {}
-        if ps:
-            dna_dims = {k: float(v) for k, v in ps.items()}
+    _raw_dna = result.get("dna_dimensions") or {}
+    if isinstance(_raw_dna, dict):
+        dna_dims = {k: float(v) for k, v in _raw_dna.items() if v is not None}
 
     squad_fit = result.get("squad_fit", [])
     if isinstance(squad_fit, list):
