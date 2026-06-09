@@ -1634,7 +1634,11 @@ if results_b is None and results_a is not None:
                     plt.close(fig_r)
 
             st.write("")
-            _tr_dir = Path(base_dir) / "training"
+            # MASTER_DIR is the source of truth for manager profiles / model
+            try:
+                from aegis.pretrain import MASTER_DIR as _tr_dir
+            except Exception:
+                _tr_dir = Path(base_dir) / "data" / "processed" / "training"
             _cluster = r0.get("cluster", 0)
 
             try:
@@ -1656,7 +1660,7 @@ if results_b is None and results_a is not None:
                                           "archetype": "Archetype"}),
                         hide_index=True, use_container_width=True)
                     else:
-                        st.caption("Requires training data.")
+                        st.caption("No similar managers found in training data.")
 
                 with _col_bench:
                     st.markdown("**Pillar vs Archetype**")
@@ -1671,6 +1675,8 @@ if results_b is None and results_a is not None:
                                           "delta": "Δ",
                                           "flag": "Signal"}),
                         hide_index=True, use_container_width=True)
+                    else:
+                        st.caption("Pillar benchmark data unavailable.")
 
                 _conf = compute_pillar_confidence(r0, st.session_state.analysis_a)
                 st.caption(f"{_conf['badge']}  {_conf['confidence_note']}")
@@ -1843,68 +1849,103 @@ elif results_b is not None:
     with ctab_formation:
         _fa_col, _fb_col = st.columns(2)
 
+        try:
+            from aegis.dna_insights import compute_formation_history as _cfh_cmp
+        except ImportError:
+            _cfh_cmp = None
+
+        @st.cache_data(ttl=3600*4, show_spinner=False)
+        def _cmp_cached_hist(team, comp_id, s_id, u, p):
+            return _cfh_cmp(team, comp_id, s_id, u, p) if _cfh_cmp else None
+
         def _render_formation_col(col, result, analysis_snap, label, color):
             with col:
-                mgr   = result.get("manager", "")
-                club  = result.get("club", "")
-                c_fmt = result.get("primary_formation", "4-3-3")
-                m_fmt = result.get("manager_formation", "4-3-3")
-                c_pct = result.get("primary_formation_pct", 0)
-                m_pct = result.get("manager_formation_pct", 0)
-                m_tm  = result.get("manager_prev_team", "")
-                compat = result.get("formation_compatibility", {})
-                dual   = result.get("dual_ideal_xi")
-                c_lbl  = compat.get("label", "")
-                c_scr  = compat.get("score", 0)
-                c_clr  = ("#34d399" if c_scr >= 70 else
-                          "#fbbf24" if c_scr >= 45 else
-                          "#f87171" if c_lbl else "#64748b")
+                mgr  = result.get("manager", "")
+                club = result.get("club", "")
+                dual = result.get("dual_ideal_xi")
+                m_tm = result.get("manager_prev_team", "") or ""
 
                 st.markdown(
-                    f'<span class="scenario-header scenario-{color}">'
-                    f'{label}: {mgr} → {club}</span>',
+                    f'<span class="scenario-header scenario-{color}">'                    f'{label}: {mgr} → {club}</span>',
                     unsafe_allow_html=True)
 
-                if c_lbl:
-                    fc1, fc2 = st.columns(2)
-                    with fc1:
-                        _cs = f"{c_fmt}" + (f" · {c_pct:.0f}%" if c_pct else "")
-                        st.markdown(metric_card(_cs, "Club shape", "gradient"),
-                                    unsafe_allow_html=True)
-                    with fc2:
-                        _ms = f"{m_fmt}" + (f" · {m_pct:.0f}%" if m_pct else "")
-                        _mt = f"Manager preferred{' · ' + m_tm if m_tm else ''}"
-                        st.markdown(metric_card(_ms, _mt, color),
-                                    unsafe_allow_html=True)
-                    st.markdown(
-                        f'<div style="font-size:.85rem; color:{c_clr}; '
-                        f'font-weight:600; margin:.5rem 0;">'
-                        f'{c_lbl} ({c_scr}/100)</div>',
-                        unsafe_allow_html=True)
-                    for note in compat.get("notes", []):
-                        st.caption(f"ℹ️  {note}")
-                    st.write("")
+                # Formation history charts — source of truth
+                _ch1, _ch2 = st.columns(2)
+                _c_hist = _m_hist_cmp = None
+                _comp_id = all_teams_map.get(club, league_id_a)
 
-                # Formation pitch
+                def _mini_bar(ax_m, fg_m, freq, pct, color_hex):
+                    fmts = sorted(freq.keys(), key=lambda x: freq[x], reverse=True)
+                    vals = [pct[f] for f in fmts]
+                    fg_m.patch.set_facecolor("#0a0e17")
+                    ax_m.set_facecolor("#0f1520")
+                    ax_m.barh(fmts, vals, color=color_hex, alpha=0.85)
+                    ax_m.set_xlabel("% matches", color="#94a3b8", fontsize=6)
+                    ax_m.tick_params(colors="#94a3b8", labelsize=6)
+                    ax_m.spines[["top","right","bottom","left"]].set_visible(False)
+                    plt.tight_layout(pad=0.3)
+
+                with _ch1:
+                    st.markdown(f"**🏟 {club}**")
+                    if has_creds:
+                        _c_hist = _cmp_cached_hist(club, _comp_id, season_id, sb_user, sb_pass)
+                        if _c_hist:
+                            _fg, _ax = plt.subplots(figsize=(3, max(1.2, len(_c_hist["frequency"])*0.5)))
+                            _mini_bar(_ax, _fg, _c_hist["frequency"], _c_hist["frequency_pct"], "#38bdf8")
+                            st.pyplot(_fg, use_container_width=True)
+                            plt.close(_fg)
+
+                if not m_tm:
+                    try:
+                        from aegis.dna_insights import get_manager_previous_team
+                        from aegis.pretrain import MASTER_DIR
+                        m_tm = get_manager_previous_team(mgr, MASTER_DIR) or ""
+                    except Exception:
+                        m_tm = ""
+
+                with _ch2:
+                    if m_tm and has_creds:
+                        st.markdown(f"**👔 {mgr} at {m_tm}**")
+                        _m_comp = all_teams_map.get(m_tm, league_id_a)
+                        _m_hist_cmp = _cmp_cached_hist(m_tm, _m_comp, season_id, sb_user, sb_pass)
+                        if _m_hist_cmp:
+                            _fg2, _ax2 = plt.subplots(figsize=(3, max(1.2, len(_m_hist_cmp["frequency"])*0.5)))
+                            _mini_bar(_ax2, _fg2, _m_hist_cmp["frequency"], _m_hist_cmp["frequency_pct"], "#fb923c")
+                            st.pyplot(_fg2, use_container_width=True)
+                            plt.close(_fg2)
+                    else:
+                        st.caption("Previous club unknown.")
+
+                # Text from chart data
+                _chart_c = (_c_hist or {}).get("primary")
+                _chart_m = (_m_hist_cmp or {}).get("primary")
+                _c_pct   = (_c_hist or {}).get("primary_pct", 0)
+                _m_pct   = (_m_hist_cmp or {}).get("primary_pct", 0)
+                if _chart_c or _chart_m:
+                    _cd = f"**{_chart_c}**" if _chart_c else "unknown"
+                    _md = f"**{_chart_m}**" if _chart_m else "unknown"
+                    st.caption(f"{club}: {_cd}{(f' ({_c_pct:.0f}%)'if _c_pct else '')}  ·  {mgr}: {_md}{(f' ({_m_pct:.0f}% at {m_tm})'if _m_pct and m_tm else '')}")
+                st.write("")
+
+                # Pitch diagrams
+                _eff_c = _chart_c or result.get("primary_formation")
+                _eff_m = _chart_m or result.get("manager_formation")
                 if dual:
                     xi_c = dual.get("ideal_xi_club", [])
                     xi_m = dual.get("ideal_xi_manager", [])
                     if xi_c or xi_m:
-                        fig_d = render_dual_formation_pitch(
-                            xi_c, xi_m,
-                            dual.get("club_formation", c_fmt),
-                            dual.get("manager_formation", m_fmt),
-                            club_label=club, mgr_label=mgr)
+                        _dc = dual.get("club_formation") or _eff_c or "4-3-3"
+                        _dm = dual.get("manager_formation") or _eff_m or "4-3-3"
+                        fig_d = render_dual_formation_pitch(xi_c, xi_m, _dc, _dm,
+                                                            club_label=club, mgr_label=mgr)
                         st.pyplot(fig_d, use_container_width=True)
                         plt.close(fig_d)
-                else:
+                elif _eff_c:
                     xi = result.get("ideal_xi", [])
                     if xi:
-                        fig_s = render_formation_pitch(xi, c_fmt,
-                                                       title=f"{club} ({c_fmt})")
+                        fig_s = render_formation_pitch(xi, _eff_c, title=f"{club} ({_eff_c})")
                         st.pyplot(fig_s, use_container_width=True)
                         plt.close(fig_s)
-
         _render_formation_col(_fa_col, r_a, st.session_state.analysis_a, "A", "a")
         _render_formation_col(_fb_col, r_b, st.session_state.analysis_b, "B", "b")
 
@@ -1942,6 +1983,38 @@ elif results_b is not None:
                              use_container_width=True, hide_index=True)
         else:
             st.caption("DNA dimensions unavailable.")
+
+        # Similarity and pillar benchmarks for each scenario
+        if dna_a or dna_b:
+            st.divider()
+            try:
+                from aegis.pretrain import MASTER_DIR as _cmp_tr_dir
+                from aegis.dna_insights import compute_manager_similarity, compute_pillar_benchmarks
+                _sim_a_col, _sim_b_col = st.columns(2)
+                for _col, _mgr, _dna, _res, _snap in [
+                    (_sim_a_col, mgr_a, dna_a, r_a, st.session_state.analysis_a),
+                    (_sim_b_col, mgr_b, dna_b, r_b, st.session_state.analysis_b),
+                ]:
+                    with _col:
+                        st.markdown(f"**Similar to {_mgr}**")
+                        _sim = compute_manager_similarity(_mgr, _cmp_tr_dir)
+                        if _sim:
+                            st.dataframe(
+                                pd.DataFrame(_sim)[["manager","team","similarity_pct"]].rename(
+                                    columns={"manager":"Manager","team":"Club","similarity_pct":"Sim %"}),
+                                hide_index=True, use_container_width=True)
+                        else:
+                            st.caption("No matches found.")
+                        _cl = _res.get("cluster", 0)
+                        _bench = compute_pillar_benchmarks(_mgr, _cl, _cmp_tr_dir, _dna or {})
+                        if _bench:
+                            st.markdown(f"**Pillar vs Archetype — {_mgr}**")
+                            st.dataframe(
+                                pd.DataFrame(_bench)[["display_name","score","archetype_mean","delta","flag"]].rename(
+                                    columns={"display_name":"Pillar","archetype_mean":"Avg","flag":"Signal","delta":"Δ","score":"Score"}),
+                                hide_index=True, use_container_width=True)
+            except Exception as _cde:
+                st.caption(f"DNA insights unavailable: {_cde}")
 
     # ─────────────────────────────────────────────────────────────────────────
     # TAB: SQUAD
