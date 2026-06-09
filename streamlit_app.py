@@ -667,9 +667,6 @@ def render_squad_detail_table(squad_data, ideal_xi=None, key_suffix=""):
     _filter_opts = ["All"] + _ordered
 
     _filter_key = f"squad_filter{key_suffix}"
-    if _filter_key not in st.session_state:
-        st.session_state[_filter_key] = "All"
-
     _selected = st.radio("Filter by classification", _filter_opts,
                          horizontal=True, key=_filter_key)
 
@@ -718,6 +715,10 @@ for key, default in [
     ("dossier_player_list", []), ("d_league_last", ""),
     ("shortlist", None), ("shortlist_club", None),
     ("report_sections", None),
+    # Squad filter keys — must exist before any tab renders to prevent tab jump
+    ("squad_filter_single", "All"),
+    ("squad_filter_cmp_a", "All"),
+    ("squad_filter_cmp_b", "All"),
 ]:
     if key not in st.session_state:
         st.session_state[key] = default
