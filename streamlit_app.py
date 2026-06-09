@@ -623,9 +623,6 @@ def render_squad_detail_table(squad_data, ideal_xi=None, key_suffix=""):
         df["Status"] = df["classification"].map(
             lambda c: f"{CLS_EMOJI.get(c, '⚪')} {c}" if pd.notna(c) else "⚪ Unknown")
 
-    if xi_slots and "player" in df.columns:
-        df["Ideal XI"] = df["player"].map(lambda n: xi_slots.get(n, "—"))
-
     # ── Classification filter ─────────────────────────────────────────────────
     _cls_col = "classification" if "classification" in df.columns else None
     _all_cls = (sorted(df[_cls_col].dropna().unique().tolist())
@@ -638,6 +635,14 @@ def render_squad_detail_table(squad_data, ideal_xi=None, key_suffix=""):
                          horizontal=True, key=f"squad_filter{key_suffix}")
 
     _disp = df if _selected == "All" else df[df[_cls_col] == _selected]
+
+    # Normalise name column — pipeline uses "name" or "player"
+    if "name" in df.columns and "player" not in df.columns:
+        df = df.rename(columns={"name": "player"})
+    if "player" in df.columns and "Status" in df.columns:
+        df = df.copy()   # avoid SettingWithCopyWarning
+    if xi_slots and "player" in df.columns:
+        df["Ideal XI"] = df["player"].map(lambda n: xi_slots.get(n, "—"))
 
     # ── Column selection + rename ─────────────────────────────────────────────
     _col_map = {
