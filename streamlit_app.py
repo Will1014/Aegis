@@ -1493,13 +1493,12 @@ if results_b is None and results_a is not None:
                 st.pyplot(fig_h, use_container_width=True)
                 plt.close(fig_h)
                 st.caption(f"{_hist['matches_sampled']} matches sampled")
+                return _hist   # caller uses this for text description
 
-        _render_history_chart(
+        _club_hist = _render_history_chart(
             _hist_col1, club_name, league_id_a,
             f"🏟 {club_name} — formation history", "#38bdf8")
-        # If pipeline didn't populate mgr_team, try looking it up directly
-        # from master model profiles (handles the case where formation detection
-        # failed in __init__.py but the profile data is still available)
+
         if not mgr_team:
             try:
                 from aegis.dna_insights import get_manager_previous_team
@@ -1508,14 +1507,21 @@ if results_b is None and results_a is not None:
             except Exception:
                 mgr_team = ""
 
+        _mgr_hist = None
         if mgr_team and has_creds:
             _mgr_comp = all_teams_map.get(mgr_team, league_id_a)
-            _render_history_chart(
+            _mgr_hist = _render_history_chart(
                 _hist_col2, mgr_team, _mgr_comp,
                 f"👔 {mgr_name} at {mgr_team} — formation history", "#fb923c")
         else:
             with _hist_col2:
                 st.caption("Manager's previous club not identified in training data.")
+
+        # Derive formations from chart data — single source of truth
+        _chart_club_fmt = (_club_hist or {}).get("primary")
+        _chart_mgr_fmt  = (_mgr_hist  or {}).get("primary")
+        _chart_club_pct = (_club_hist or {}).get("primary_pct", 0)
+        _chart_mgr_pct  = (_mgr_hist  or {}).get("primary_pct", 0)
 
         st.write("")
 
@@ -1562,36 +1568,56 @@ if results_b is None and results_a is not None:
                     st.pyplot(fig_s, use_container_width=True)
                     plt.close(fig_s)
 
-            # Explain what each formation represents
-            _club_pct  = r0.get("primary_formation_pct", 0)
-            _mgr_pct   = r0.get("manager_formation_pct", 0)
-            _mgr_team  = r0.get("manager_prev_team", "")
-
-            _club_src = (f"**{club_name}** have historically played **{club_fmt}**"
-                         + (f" ({_club_pct:.0f}% of recent matches)" if _club_pct else "")
-                         + ".")
-            _mgr_src  = (f"**{mgr_name}**'s preferred formation"
-                         + (f", based on their tenure at {_mgr_team}," if _mgr_team else "")
-                         + f" is also **{mgr_fmt}**"
-                         + (f" ({_mgr_pct:.0f}% of matches)" if _mgr_pct else "")
-                         + ".")
-            st.markdown(f"{_club_src}  {_mgr_src}  No structural adaptation required.")
+            # Text uses chart data so it always matches what's displayed
+            _c_lbl = f"**{_chart_club_fmt}**" if _chart_club_fmt else "an unknown formation"
+            _m_lbl = f"**{_chart_mgr_fmt}**"  if _chart_mgr_fmt  else "an unknown formation"
+            _c_src = (f"**{club_name}** predominantly play {_c_lbl}"
+                      + (f" ({_chart_club_pct:.0f}% of matches)" if _chart_club_pct else "") + ".")
+            _m_src = (f"**{mgr_name}**'s preferred shape"
+                      + (f" at {mgr_team}" if mgr_team else "")
+                      + f" is {_m_lbl}"
+                      + (f" ({_chart_mgr_pct:.0f}% of matches)" if _chart_mgr_pct else "") + ".")
+            st.markdown(f"{_c_src}  {_m_src}  No structural adaptation required.")
 
         else:
-            # Formations differ but dual XI data absent
+            # Formations differ but dual XI data absent — still use chart data for text
             xi_single = r0.get("ideal_xi", [])
+            _eff_club = _chart_club_fmt or club_fmt
+            _eff_mgr  = _chart_mgr_fmt  or mgr_fmt
             if xi_single:
                 _pc1, _pc2 = st.columns(2)
                 with _pc1:
-                    fig_c = render_formation_pitch(xi_single, club_fmt,
-                                                   title=f"{club_name} ({club_fmt})")
+                    fig_c = render_formation_pitch(xi_single, _eff_club,
+                                                   title=f"{club_name} ({_eff_club})")
                     st.pyplot(fig_c, use_container_width=True)
                     plt.close(fig_c)
                 with _pc2:
-                    fig_m = render_formation_pitch(xi_single, mgr_fmt,
-                                                   title=f"{mgr_name} preferred ({mgr_fmt})")
+                    fig_m = render_formation_pitch(xi_single, _eff_mgr,
+                                                   title=f"{mgr_name} preferred ({_eff_mgr})")
                     st.pyplot(fig_m, use_container_width=True)
                     plt.close(fig_m)
+
+        # ── Summary sentence for all formation cases ──────────────────────────
+        if _chart_club_fmt or _chart_mgr_fmt:
+            _c_lbl2 = f"**{_chart_club_fmt}**" if _chart_club_fmt else "unknown"
+            _m_lbl2 = f"**{_chart_mgr_fmt}**"  if _chart_mgr_fmt  else "unknown"
+            _c_src2 = (f"**{club_name}** predominantly play {_c_lbl2}"
+                       + (f" ({_chart_club_pct:.0f}% of matches)" if _chart_club_pct else "") + ".")
+            _m_src2 = (f"**{mgr_name}**'s preferred shape"
+                       + (f" at {mgr_team}" if mgr_team else "")
+                       + f" is {_m_lbl2}"
+                       + (f" ({_chart_mgr_pct:.0f}% of matches)" if _chart_mgr_pct else "") + ".")
+            if not dual_data and not (_chart_club_fmt and _chart_mgr_fmt and _chart_club_fmt == _chart_mgr_fmt):
+                try:
+                    from aegis.formations import compute_formation_compatibility as _cfc2
+                    _c2 = _cfc2(_chart_club_fmt, _chart_mgr_fmt) if (
+                        _chart_club_fmt and _chart_mgr_fmt) else {}
+                    _v2 = (f"Compatibility: **{_c2['label']}** ({_c2['score']}/100)."
+                           if _c2.get("label") and _c2.get("label") != "Unknown" else
+                           "Structural adaptation will be required.")
+                except Exception:
+                    _v2 = "Structural adaptation will be required."
+                st.markdown(f"{_c_src2}  {_m_src2}  {_v2}")
 
     # ─────────────────────────────────────────────────────────────────────────
     # TAB: DNA PROFILE
