@@ -884,12 +884,13 @@ def _run_single_statsbomb_analysis(
             print("  ℹ Club formation: defaulting to 4-3-3")
 
         # 2. Manager's historical preferred formation (from their previous club)
-        # Use the local training_dir variable (already in scope) — SquadFitAnalyzer
-        # does not expose training_dir as an instance attribute.
+        # Config.PROCESSED_DIR / "training" is the correct path — training_dir
+        # is a local variable in the outer function and is not in scope here.
+        _mgr_training_dir = Config.PROCESSED_DIR / "training"
         _mgr_formation_data = compute_manager_formation(
             manager_name=manager_name,
-            training_dir=training_dir,
-            training_league_ids=training_league_ids or list(range(2, 7)),
+            training_dir=_mgr_training_dir,
+            training_league_ids=list(range(2, 7)),   # all licensed leagues
             season_id=scenario.get("season_id", 317),
             sb_username=_os.environ.get("SB_USERNAME", ""),
             sb_password=_os.environ.get("SB_PASSWORD", ""),
