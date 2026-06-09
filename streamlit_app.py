@@ -672,6 +672,12 @@ def render_squad_detail_table(squad_data, ideal_xi=None, key_suffix=""):
 
     _disp = df if _selected == "All" else df[df[_cls_col] == _selected]
 
+    # Use detailed_position if available (e.g. "Left-Back" instead of "Defender")
+    if "detailed_position" in df.columns:
+        df["position"] = df["detailed_position"].where(
+            df["detailed_position"].notna() & (df["detailed_position"] != ""),
+            other=df.get("position", ""))
+
     # ── Column selection + rename ─────────────────────────────────────────────
     _col_map = {
         "player":    "Player",
@@ -699,6 +705,29 @@ def render_squad_detail_table(squad_data, ideal_xi=None, key_suffix=""):
     st.caption(f"{len(_disp)} player{'s' if len(_disp) != 1 else ''} shown"
                + (f" · {len(df)} total" if len(_disp) != len(df) else ""))
     return df
+
+
+# ── Module-level cached formation functions (must be at module level for ────
+# ── Streamlit's cache to work correctly across re-runs) ─────────────────────
+
+@st.cache_data(ttl=3600 * 4, show_spinner=False)
+def _cached_formation_history(team, comp_id, s_id, sb_u, sb_p):
+    """Cached formation history — module-level so cache persists across re-runs."""
+    try:
+        from aegis.dna_insights import compute_formation_history
+        return compute_formation_history(team, comp_id, s_id, sb_u, sb_p)
+    except Exception:
+        return None
+
+
+@st.cache_data(ttl=3600 * 4, show_spinner=False)
+def _cached_formation_tendency(team, comp_id, s_id, sb_u, sb_p):
+    """Cached formation tendency — module-level for reliable caching."""
+    try:
+        from aegis.dna_insights import compute_formation_tendency
+        return compute_formation_tendency(team, comp_id, s_id, sb_u, sb_p)
+    except Exception:
+        return None
 
 
 # ══════════════════════════════════════════════════════════════
@@ -1572,14 +1601,12 @@ if results_b is None and results_a is not None:
                 try:
                     from aegis.dna_insights import compute_formation_history as _cfh
                 except ImportError:
-                    st.caption("Formation history unavailable — push latest dna_insights.py.")
+                    _cfh = None
+                if _cfh is None:
+                    st.caption("Formation history unavailable.")
                     return
 
-                @st.cache_data(ttl=3600*4, show_spinner=False)
-                def _cached_history(team, comp_id, s_id, u, p):
-                    return _cfh(team, comp_id, s_id, u, p)
-
-                _hist = _cached_history(team, comp_id, season_id, sb_user, sb_pass)
+                _hist = _cached_formation_history(team, comp_id, season_id, sb_user, sb_pass)
                 if not _hist:
                     st.caption(f"No formation data found for {team} in this season.")
                     return
@@ -1972,9 +1999,7 @@ elif results_b is not None:
         except ImportError:
             _cfh_cmp = None
 
-        @st.cache_data(ttl=3600*4, show_spinner=False)
-        def _cmp_cached_hist(team, comp_id, s_id, u, p):
-            return _cfh_cmp(team, comp_id, s_id, u, p) if _cfh_cmp else None
+        # _cmp_cached_hist defined at module level
 
         def _render_formation_col(col, result, analysis_snap, label, color):
             with col:
@@ -2006,7 +2031,7 @@ elif results_b is not None:
                 with _ch1:
                     st.markdown(f"**🏟 {club}**")
                     if has_creds:
-                        _c_hist = _cmp_cached_hist(club, _comp_id, season_id, sb_user, sb_pass)
+                        _c_hist = _cached_formation_history(club, _comp_id, season_id, sb_user, sb_pass)
                         if _c_hist:
                             _fg, _ax = plt.subplots(figsize=(3, max(1.2, len(_c_hist["frequency"])*0.5)))
                             _mini_bar(_ax, _fg, _c_hist["frequency"], _c_hist["frequency_pct"], "#38bdf8")
@@ -2025,7 +2050,7 @@ elif results_b is not None:
                     if m_tm and has_creds:
                         st.markdown(f"**👔 {mgr} at {m_tm}**")
                         _m_comp = all_teams_map.get(m_tm, league_id_a)
-                        _m_hist_cmp = _cmp_cached_hist(m_tm, _m_comp, season_id, sb_user, sb_pass)
+                        _m_hist_cmp = _cached_formation_history(m_tm, _m_comp, season_id, sb_user, sb_pass)
                         if _m_hist_cmp:
                             _fg2, _ax2 = plt.subplots(figsize=(3, max(1.2, len(_m_hist_cmp["frequency"])*0.5)))
                             _mini_bar(_ax2, _fg2, _m_hist_cmp["frequency"], _m_hist_cmp["frequency_pct"], "#fb923c")
