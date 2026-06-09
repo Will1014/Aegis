@@ -588,8 +588,15 @@ def render_squad_detail_table(squad_data, ideal_xi=None, key_suffix=""):
         st.caption("No squad data available.")
         return None
 
-    players = (squad_data.get("players", squad_data)
-               if isinstance(squad_data, dict) else squad_data)
+    # squad_fit_summary.json stores players under "squad_fit";
+    # fall back to "players", "ideal_xi", or the data itself if already a list.
+    if isinstance(squad_data, dict):
+        players = (squad_data.get("squad_fit")
+                   or squad_data.get("players")
+                   or squad_data.get("ideal_xi")
+                   or [])
+    else:
+        players = squad_data or []
     if not isinstance(players, list) or not players:
         st.caption("No player data available.")
         return None
