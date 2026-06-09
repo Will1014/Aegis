@@ -121,7 +121,11 @@ def train_master(base_dir: str, verbose: bool = True) -> bool:
             master = ManagerDNATrainer(training_dir=MASTER_DIR)
             master.manager_features = combined_features
             master.feature_names    = feature_names   # None → falls back to default
-            master.fit(verbose=verbose)
+            # Fix n_clusters=6 — silhouette auto-selection collapses to K=2 on
+            # large cross-league datasets. 6 archetypes gives tactically meaningful
+            # separation: High-Press, Possession-Based, Counter-Attack,
+            # Defensive, Attacking, Balanced.
+            master.fit(verbose=verbose, n_clusters=6)
             master.save(verbose=True)
         except Exception as e:
             print(f"  ✗ fit/save failed: {e}")
