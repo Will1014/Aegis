@@ -573,26 +573,91 @@ def render_metrics(r: dict, color_class: str = "gradient"):
 
 
 def render_squad_table(squad_data, key_suffix=""):
-    """Render squad fit table from snapshot data."""
+    """Legacy wrapper — calls render_squad_detail_table."""
+    return render_squad_detail_table(squad_data, key_suffix=key_suffix)
+
+
+def render_squad_detail_table(squad_data, ideal_xi=None, key_suffix=""):
+    """
+    Render a rich squad fit table with classification filter.
+
+    Shows player name, position, fit score, classification (with emoji),
+    ideal XI slot (if provided), and strengths/risks where available.
+    """
     if squad_data is None:
+        st.caption("No squad data available.")
         return None
+
     players = (squad_data.get("players", squad_data)
                if isinstance(squad_data, dict) else squad_data)
     if not isinstance(players, list) or not players:
+        st.caption("No player data available.")
         return None
-    df = pd.DataFrame(players)
-    display_cols = [c for c in ["player", "position", "fit_score",
-                                 "classification", "strengths", "risks"]
-                   if c in df.columns]
-    if not display_cols:
-        return None
-    with st.expander(f"📋 Squad Fit Details ({len(df)} players)",
-                     expanded=True):
-        st.dataframe(
-            df[display_cols].sort_values("fit_score", ascending=False),
-            use_container_width=True, hide_index=True,
-            height=min(len(df) * 38 + 40, 600),
-        )
+
+    df = pd.DataFrame(players).copy()
+
+    # ── Build ideal XI slot map ───────────────────────────────────────────────
+    xi_slots = {}
+    if ideal_xi:
+        for p in (ideal_xi if isinstance(ideal_xi, list) else []):
+            name = (p.get("name") or p.get("player") or "") if isinstance(p, dict) else ""
+            slot = p.get("slot", "") if isinstance(p, dict) else ""
+            if name and slot:
+                xi_slots[name] = slot
+
+    # ── Classification emoji ──────────────────────────────────────────────────
+    CLS_EMOJI = {
+        "Key Enabler":             "🟢",
+        "Good Fit":                "🟡",
+        "System Dependent":        "🟠",
+        "Potentially Marginalised":"🔴",
+    }
+    if "classification" in df.columns:
+        df["Status"] = df["classification"].map(
+            lambda c: f"{CLS_EMOJI.get(c, '⚪')} {c}" if pd.notna(c) else "⚪ Unknown")
+
+    if xi_slots and "player" in df.columns:
+        df["Ideal XI"] = df["player"].map(lambda n: xi_slots.get(n, "—"))
+
+    # ── Classification filter ─────────────────────────────────────────────────
+    _cls_col = "classification" if "classification" in df.columns else None
+    _all_cls = (sorted(df[_cls_col].dropna().unique().tolist())
+                if _cls_col else [])
+    _ordered = [c for c in ["Key Enabler","Good Fit","System Dependent",
+                             "Potentially Marginalised"] if c in _all_cls]
+    _filter_opts = ["All"] + _ordered
+
+    _selected = st.radio("Filter by classification", _filter_opts,
+                         horizontal=True, key=f"squad_filter{key_suffix}")
+
+    _disp = df if _selected == "All" else df[df[_cls_col] == _selected]
+
+    # ── Column selection + rename ─────────────────────────────────────────────
+    _col_map = {
+        "player":    "Player",
+        "position":  "Position",
+        "fit_score": "Fit Score",
+        "Status":    "Classification",
+        "Ideal XI":  "Ideal XI Slot",
+        "strengths": "Strengths",
+        "risks":     "Risks",
+    }
+    _show = [c for c in _col_map if c in _disp.columns]
+    _disp = (_disp[_show]
+             .rename(columns=_col_map)
+             .sort_values("Fit Score", ascending=False))
+
+    st.dataframe(
+        _disp,
+        use_container_width=True,
+        hide_index=True,
+        height=min(len(_disp) * 38 + 40, 680),
+        column_config={
+            "Fit Score": st.column_config.NumberColumn(format="%.1f"),
+        },
+    )
+    st.caption(f"{len(_disp)} player{'s' if len(_disp) != 1 else ''} shown"
+               + (f" · {len(df)} total" if len(_disp) != len(df) else ""))
     return df
 
 
@@ -1692,7 +1757,16 @@ if results_b is None and results_a is not None:
     with tab_squad:
         render_metrics(r0, color_class="gradient")
         st.write("")
-        render_squad_table(st.session_state.squad_a)
+        render_squad_detail_table(
+            st.session_state.squad_a,
+            ideal_xi=r0.get("ideal_xi", []),
+            key_suffix="_single",
+        )
+        _rec = r0.get("recruitment", []) or st.session_state.analysis_a.get("recruitment", [])
+        if _rec:
+            st.write("")
+            st.markdown("**Recruitment Priorities**")
+            st.dataframe(pd.DataFrame(_rec), use_container_width=True, hide_index=True)
 
     # ─────────────────────────────────────────────────────────────────────────
     # TAB: DASHBOARD
@@ -2023,56 +2097,89 @@ elif results_b is not None:
         squad_a_data = st.session_state.squad_a
         squad_b_data = st.session_state.squad_b
 
+        CLS_EMOJI_CMP = {"Key Enabler":"🟢","Good Fit":"🟡",
+                         "System Dependent":"🟠","Potentially Marginalised":"🔴"}
+
+        def _squad_to_df(data):
+            p = data.get("players", data) if isinstance(data, dict) else data
+            return pd.DataFrame(p) if isinstance(p, list) and p else pd.DataFrame()
+
         if club_a == club_b and squad_a_data and squad_b_data:
-            st.caption(f"Same squad ({club_a}) — showing fit score change under each manager")
+            st.markdown(f"**{club_a}** — how every player fares under each manager")
 
-            def _to_df(data):
-                players = data.get("players", data) if isinstance(data, dict) else data
-                return pd.DataFrame(players) if isinstance(players, list) and players else pd.DataFrame()
-
-            df_a = _to_df(squad_a_data)
-            df_b = _to_df(squad_b_data)
+            df_a = _squad_to_df(squad_a_data)
+            df_b = _squad_to_df(squad_b_data)
 
             if "player" in df_a.columns and "player" in df_b.columns:
-                merged = pd.merge(
-                    df_a[["player", "position", "fit_score", "classification"]],
-                    df_b[["player", "fit_score", "classification"]],
-                    on="player", how="outer",
-                    suffixes=(f" ({mgr_a})", f" ({mgr_b})"))
-                col_fa = f"fit_score ({mgr_a})"
-                col_fb = f"fit_score ({mgr_b})"
-                if col_fa in merged.columns and col_fb in merged.columns:
-                    merged["Fit Δ"] = (merged[col_fa].fillna(0) - merged[col_fb].fillna(0)).round(1)
-                    merged = merged.sort_values("Fit Δ", ascending=False)
-                st.dataframe(merged, use_container_width=True, hide_index=True,
-                             height=min(len(merged) * 38 + 40, 700))
+                # Add emoji classification to both
+                for _df in [df_a, df_b]:
+                    if "classification" in _df.columns:
+                        _df["cls_emoji"] = _df["classification"].map(
+                            lambda c: CLS_EMOJI_CMP.get(c, "⚪"))
 
-                if "Fit Δ" in merged.columns:
-                    winners = merged[merged["Fit Δ"] > 2]
-                    losers  = merged[merged["Fit Δ"] < -2]
-                    wl1, wl2 = st.columns(2)
-                    with wl1:
-                        st.markdown(f"<span style='color:#34d399; font-weight:700;'>"
-                                    f"▲ {len(winners)} players gain ≥2 fit under {mgr_a}"
-                                    f"</span>", unsafe_allow_html=True)
-                        for _, row in winners.head(5).iterrows():
-                            st.caption(f"  {row['player']}: +{row['Fit Δ']:.1f}")
-                    with wl2:
-                        st.markdown(f"<span style='color:#f87171; font-weight:700;'>"
-                                    f"▼ {len(losers)} players lose ≥2 fit under {mgr_a}"
-                                    f"</span>", unsafe_allow_html=True)
-                        for _, row in losers.tail(5).iterrows():
-                            st.caption(f"  {row['player']}: {row['Fit Δ']:.1f}")
+                merged = pd.merge(
+                    df_a[["player","position","fit_score","classification","cls_emoji"]],
+                    df_b[["player","fit_score","classification","cls_emoji"]],
+                    on="player", how="outer",
+                    suffixes=(f"_a", f"_b"))
+
+                merged["Fit Δ"] = (merged["fit_score_a"].fillna(0)
+                                   - merged["fit_score_b"].fillna(0)).round(1)
+                merged = merged.sort_values("Fit Δ", ascending=False)
+
+                display = merged.rename(columns={
+                    "player": "Player", "position": "Position",
+                    "fit_score_a": f"Fit ({mgr_a})",
+                    "fit_score_b": f"Fit ({mgr_b})",
+                    "cls_emoji_a": f"Status ({mgr_a})",
+                    "cls_emoji_b": f"Status ({mgr_b})",
+                    "classification_a": f"Class. ({mgr_a})",
+                    "classification_b": f"Class. ({mgr_b})",
+                })
+                _show_cols = ["Player","Position",
+                              f"Fit ({mgr_a})",f"Status ({mgr_a})",
+                              f"Fit ({mgr_b})",f"Status ({mgr_b})",
+                              "Fit Δ"]
+                _show_cols = [c for c in _show_cols if c in display.columns]
+                st.dataframe(
+                    display[_show_cols],
+                    use_container_width=True, hide_index=True,
+                    height=min(len(display)*38+40, 700),
+                    column_config={
+                        f"Fit ({mgr_a})": st.column_config.NumberColumn(format="%.1f"),
+                        f"Fit ({mgr_b})": st.column_config.NumberColumn(format="%.1f"),
+                        "Fit Δ": st.column_config.NumberColumn(format="%.1f"),
+                    })
+
+                # Summary callouts
+                winners = merged[merged["Fit Δ"] > 2]
+                losers  = merged[merged["Fit Δ"] < -2]
+                wl1, wl2 = st.columns(2)
+                with wl1:
+                    st.markdown(f"<span style='color:#34d399;font-weight:700;'>"
+                                f"▲ {len(winners)} players fit better under {mgr_a}"
+                                f"</span>", unsafe_allow_html=True)
+                    for _, row in winners.head(5).iterrows():
+                        st.caption(f"  {row['Player']}: +{row['Fit Δ']:.1f}")
+                with wl2:
+                    st.markdown(f"<span style='color:#f87171;font-weight:700;'>"
+                                f"▼ {len(losers)} players fit better under {mgr_b}"
+                                f"</span>", unsafe_allow_html=True)
+                    for _, row in losers.tail(5).iterrows():
+                        st.caption(f"  {row['Player']}: {row['Fit Δ']:.1f}")
         else:
+            # Different clubs — full detail table for each
             sq_a, sq_b = st.columns(2)
             with sq_a:
-                st.markdown(f'<span class="scenario-header scenario-a">A: {club_a}</span>',
+                st.markdown(f'<span class="scenario-header scenario-a">A: {mgr_a} → {club_a}</span>',
                             unsafe_allow_html=True)
-                render_squad_table(squad_a_data, key_suffix="_cmp_a")
+                render_squad_detail_table(
+                    squad_a_data, ideal_xi=r_a.get("ideal_xi",[]), key_suffix="_cmp_a")
             with sq_b:
-                st.markdown(f'<span class="scenario-header scenario-b">B: {club_b}</span>',
+                st.markdown(f'<span class="scenario-header scenario-b">B: {mgr_b} → {club_b}</span>',
                             unsafe_allow_html=True)
-                render_squad_table(squad_b_data, key_suffix="_cmp_b")
+                render_squad_detail_table(
+                    squad_b_data, ideal_xi=r_b.get("ideal_xi",[]), key_suffix="_cmp_b")
 
         # Recruitment side by side
         rec_a = st.session_state.analysis_a.get("recruitment", [])
