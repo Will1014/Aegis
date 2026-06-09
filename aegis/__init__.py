@@ -820,6 +820,51 @@ def run_full_analysis_statsbomb(
         return {}
 
 
+def _extract_formation_from_scenario(team_name: str, scenario: dict):
+    """
+    Extract formation frequency from already-fetched scenario lineup data.
+    scenario["lineups"] = [{"match_id": int, "lineups": [{...formations array...}]}, ...]
+    Returns same structure as compute_formation_tendency(), or None if no data.
+    """
+    from .formations import normalize_formation
+
+    raw_counts = {}
+    for match_entry in (scenario.get("lineups") or []):
+        for team_lineup in (match_entry.get("lineups") or []):
+            t_name = (team_lineup.get("team_name") or
+                      (team_lineup.get("team") or {}).get("name") or "")
+            if team_name.lower() in t_name.lower():
+                for fobj in (team_lineup.get("formations") or []):
+                    if (fobj.get("reason") == "Starting XI"
+                            and fobj.get("period", 1) == 1):
+                        raw_fmt = str(fobj.get("formation", "")).replace("-","").strip()
+                        canonical = normalize_formation(raw_fmt)
+                        if canonical:
+                            raw_counts[canonical] = raw_counts.get(canonical, 0) + 1
+                        break
+                break
+
+    if not raw_counts:
+        return None
+
+    total  = sum(raw_counts.values())
+    ranked = sorted(raw_counts.items(), key=lambda x: x[1], reverse=True)
+    primary     = ranked[0][0]
+    primary_pct = round(ranked[0][1] / total * 100)
+    secondary     = ranked[1][0] if len(ranked) > 1 else None
+    secondary_pct = round(ranked[1][1] / total * 100) if secondary else 0
+
+    return {
+        "primary":         primary,
+        "primary_pct":     primary_pct,
+        "secondary":       secondary,
+        "secondary_pct":   secondary_pct,
+        "other_pct":       max(0, 100 - primary_pct - secondary_pct),
+        "matches_sampled": total,
+        "raw_counts":      dict(raw_counts),
+    }
+
+
 def _run_single_statsbomb_analysis(
     team_name: str,
     manager_name: str,
@@ -865,23 +910,19 @@ def _run_single_statsbomb_analysis(
     _manager_formation   = None   # None = not yet detected; never default silently
 
     try:
-        from aegis.dna_insights import compute_formation_tendency, compute_manager_formation
+        from aegis.dna_insights import compute_manager_formation
         from aegis.formations import compute_formation_compatibility
 
-        # 1. Club's current formation (from their recent matches)
-        _formation_data = compute_formation_tendency(
-            team_name=team_name,
-            competition_id=scenario.get("competition_id", 2),
-            season_id=scenario.get("season_id", 317),
-            sb_username=_os.environ.get("SB_USERNAME", ""),
-            sb_password=_os.environ.get("SB_PASSWORD", ""),
-        )
+        # 1. Club's current formation — extracted from already-fetched lineup data.
+        # scenario["lineups"] was populated by fetch_scenario() so no extra API calls needed.
+        _formation_data = _extract_formation_from_scenario(team_name, scenario)
         if _formation_data and _formation_data.get("primary"):
             analyzer.target_formation = _formation_data["primary"]
             print(f"  ✓ Club formation: {analyzer.target_formation} "
                   f"({_formation_data.get('primary_pct', 0):.0f}% of matches)")
         else:
-            print("  ℹ Club formation: defaulting to 4-3-3")
+            analyzer.target_formation = None
+            print("  ⚠ Club formation: not found in lineup data")
 
         # 2. Manager's historical preferred formation (from their previous club)
         # Config.PROCESSED_DIR / "training" is the correct path — training_dir
