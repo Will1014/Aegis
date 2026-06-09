@@ -884,16 +884,16 @@ def _run_single_statsbomb_analysis(
             print("  ℹ Club formation: defaulting to 4-3-3")
 
         # 2. Manager's historical preferred formation (from their previous club)
-        _training_dir = getattr(analyzer, 'training_dir', None)
-        if _training_dir:
-            _mgr_formation_data = compute_manager_formation(
-                manager_name=manager_name,
-                training_dir=_training_dir,
-                training_league_ids=training_league_ids or [2],
-                season_id=scenario.get("season_id", 317),
-                sb_username=_os.environ.get("SB_USERNAME", ""),
-                sb_password=_os.environ.get("SB_PASSWORD", ""),
-            )
+        # Use the local training_dir variable (already in scope) — SquadFitAnalyzer
+        # does not expose training_dir as an instance attribute.
+        _mgr_formation_data = compute_manager_formation(
+            manager_name=manager_name,
+            training_dir=training_dir,
+            training_league_ids=training_league_ids or list(range(2, 7)),
+            season_id=scenario.get("season_id", 317),
+            sb_username=_os.environ.get("SB_USERNAME", ""),
+            sb_password=_os.environ.get("SB_PASSWORD", ""),
+        )
         if _mgr_formation_data and _mgr_formation_data.get("primary"):
             _manager_formation = _mgr_formation_data["primary"]
             _src = _mgr_formation_data.get("source_team", "training data")

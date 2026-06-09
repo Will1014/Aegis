@@ -1497,8 +1497,18 @@ if results_b is None and results_a is not None:
         _render_history_chart(
             _hist_col1, club_name, league_id_a,
             f"🏟 {club_name} — formation history", "#38bdf8")
+        # If pipeline didn't populate mgr_team, try looking it up directly
+        # from master model profiles (handles the case where formation detection
+        # failed in __init__.py but the profile data is still available)
+        if not mgr_team:
+            try:
+                from aegis.dna_insights import get_manager_previous_team
+                from aegis.pretrain import MASTER_DIR
+                mgr_team = get_manager_previous_team(mgr_name, MASTER_DIR) or ""
+            except Exception:
+                mgr_team = ""
+
         if mgr_team and has_creds:
-            # Find the league for the manager's previous team
             _mgr_comp = all_teams_map.get(mgr_team, league_id_a)
             _render_history_chart(
                 _hist_col2, mgr_team, _mgr_comp,
