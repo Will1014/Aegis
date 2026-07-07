@@ -36,6 +36,13 @@ class PlayerFit:
     fit_score: float
     classification: str
     stats: Dict
+    # True when this player's minutes were below FULL_CONFIDENCE_MINUTES and
+    # their fit score was therefore computed on stats blended toward the
+    # position-group average rather than their own raw per-90 rate (see
+    # _shrink_low_minute_features). Surfaced rather than applied silently -
+    # a low-confidence score should be visibly flagged in the UI/report, not
+    # presented with the same certainty as a full-sample player's score.
+    low_sample_confidence: bool = False
 
 
 @dataclass 
@@ -334,11 +341,133 @@ POSITION_GROUPS = {
 }
 
 # Classification thresholds
+#
+# Fit scores come from _calculate_pillar_fit(): each feature's league
+# percentile (0-100, mean=50 by construction) is weighted and averaged,
+# then a spread adjustment amplifies deviation from the 50-point centre
+# by 1.5x (adjusted = 50 + (raw - 50) * 1.5). A league-average player
+# therefore already lands on an adjusted score of 50 - there's no
+# generous "safe middle" beyond that.
+#
+# The previous thresholds (75 / 60 / 45) were NOT symmetric around that
+# 50-point centre: Key Enabler required the top third of the population
+# (raw >= 66.7) while Potentially Marginalised swept up everything below
+# raw 46.7 - essentially the entire below-average half of any squad.
+# Since our core GTM segment is bottom-5/high-turnover clubs, whose
+# squads skew below their own league's median even before tactical fit
+# is considered, most players in most target squads were landing in
+# Marginalised regardless of how well they actually suited the manager -
+# masking the signal Gary needs (who genuinely wins/loses under the shift).
+#
+# Rebalanced to be symmetric around the 50-point centre, with equal-width
+# "Good Fit" / "System Dependent" bands either side of it:
+#   Key Enabler               >= 65   (top band, mirrors Marginalised)
+#   Good Fit                   50-65  (above-average, 15-point band)
+#   System Dependent            35-50 (below-average but viable, 15-point band)
+#   Potentially Marginalised  < 35    (bottom band, mirrors Key Enabler)
+#
+# A league-median player (adjusted score 50) now sits on the Good Fit /
+# System Dependent boundary instead of one step from Marginalised, and
+# Marginalised is reserved for the genuine bottom slice of the
+# distribution rather than the whole below-average half of the squad.
+# Recommend re-running against real squads post-deploy and checking
+# classification_counts to confirm the split looks sane (minority in
+# Key Enabler, minority in Marginalised, majority across the two middle
+# bands) - tune further if a particular league's spread still looks off.
 FIT_THRESHOLDS = {
-    "key_enabler": 75,
-    "good_fit": 60,
-    "system_dependent": 45
+    "key_enabler": 65,
+    "good_fit": 50,
+    "system_dependent": 35
 }
+
+# ─────────────────────────────────────────────────────────────────────
+# FINE-GRAINED PLAYER ROLES (for data-driven PILLAR_PLAYER_DEMANDS)
+# ─────────────────────────────────────────────────────────────────────
+# The coarse POSITION_GROUPS (GK/DEF/MID/ATT) are what's used for league
+# percentile benchmarking - kept coarse deliberately (see _calculate_pillar_fit
+# docstring). These 8 finer roles are ONLY used for looking up demand
+# weights - a ball-playing CB and an overlapping FB get the same percentile
+# benchmark pool, but can get different pillar demand weights if
+# train_position_demands.py has produced data for both.
+PLAYER_ROLES = ["GK", "CB", "FB", "DM", "CM", "AM", "WING", "ST"]
+
+# Which coarse group each fine role rolls up to. Used (a) by
+# train_position_demands.py as the shrinkage prior lookup - i.e. which
+# PILLAR_PLAYER_DEMANDS[pillar][coarse_group] entry to shrink a thin-data
+# fine-role estimate toward, and (b) at runtime in _compute_dynamic_weights
+# as the fallback when a fine role has no data-driven entry for a pillar.
+ROLE_COARSE_GROUP = {
+    "GK": "GK", "CB": "DEF", "FB": "DEF",
+    "DM": "MID", "CM": "MID",
+    "AM": "ATT", "WING": "ATT", "ST": "ATT",
+}
+
+
+def get_player_role(detailed_position: str = "", position: str = "", position_group: str = "") -> str:
+    """
+    Classify a player into one of the 8 PLAYER_ROLES from their detailed
+    position string (e.g. "Centre-Back", "Wing-Back", "Attacking Midfield" -
+    matches StatsBombETL.DETAILED_POSITION_MAP's vocabulary). Falls back to
+    a role implied by the coarse position_group (DEF->CB, MID->CM, ATT->ST)
+    when the string doesn't match a known pattern, so this always returns
+    something usable rather than None.
+    """
+    check = (detailed_position or position or "").lower()
+
+    if "goal" in check:
+        return "GK"
+    if "centre-back" in check or "center-back" in check:
+        return "CB"
+    if "back" in check:            # right-back, left-back, wing-back
+        return "FB"
+    if "defensive midfield" in check:
+        return "DM"
+    if "attacking midfield" in check:
+        return "AM"
+    if "winger" in check:
+        return "WING"
+    if "midfield" in check:        # central/right/left midfield
+        return "CM"
+    if "forward" in check or "striker" in check or "attacker" in check:
+        return "ST"
+
+    return {"GK": "GK", "DEF": "CB", "MID": "CM", "ATT": "ST"}.get(position_group, "CM")
+
+
+_DATA_DRIVEN_DEMANDS_CACHE = None  # None = not yet checked, {} = checked and absent
+
+
+def _load_data_driven_demands() -> Optional[Dict]:
+    """
+    Load empirically-derived PILLAR_PLAYER_DEMANDS produced by
+    train_position_demands.py, if that job has been run.
+
+    Expected structure: {pillar_key: {role: {feature: weight}}} using the
+    PLAYER_ROLES above. Cached at module level for the process lifetime -
+    the file only changes when the nightly training job runs, not per
+    request, so there's no need to re-read it on every score calculation.
+
+    Returns None if the file doesn't exist yet (e.g. before
+    train_position_demands.py has ever run) - callers should treat that as
+    "use the hand-authored PILLAR_PLAYER_DEMANDS table for everything",
+    which is exactly today's behaviour.
+    """
+    global _DATA_DRIVEN_DEMANDS_CACHE
+    if _DATA_DRIVEN_DEMANDS_CACHE is not None:
+        return _DATA_DRIVEN_DEMANDS_CACHE or None
+
+    path = Config.PROCESSED_DIR / "training" / "pillar_player_demands.json"
+    if not path.exists():
+        _DATA_DRIVEN_DEMANDS_CACHE = {}
+        return None
+
+    try:
+        with open(path) as f:
+            _DATA_DRIVEN_DEMANDS_CACHE = json.load(f)
+        return _DATA_DRIVEN_DEMANDS_CACHE
+    except Exception:
+        _DATA_DRIVEN_DEMANDS_CACHE = {}
+        return None
 
 # Default managers for training set (Premier League 2024/25)
 # Updated January 2026 with current appointments
@@ -1185,6 +1314,8 @@ class ManagerDNATrainer:
                     "team_id": team_id,
                     "team_name": info["team_name"],
                     "league": f"Competition {comp_id}",
+                    "competition_id": comp_id,
+                    "season_id": season_id,
                     # Extended metrics (not used for clustering, used for DNA profile)
                     "_possession": possession,
                     "_pass_accuracy": passing_ratio,
@@ -2192,6 +2323,7 @@ class SquadFitAnalyzer:
         
         if use_pillar_scoring:
             self._build_league_percentiles(league_player_stats, verbose)
+            self._build_quantile_thresholds(verbose)
         
         self.squad_fit = []
         
@@ -2216,13 +2348,22 @@ class SquadFitAnalyzer:
             position = profile.get("position", "Unknown")
             detailed_position = profile.get("detailed_position", position)
             position_group = self._get_position_group_from_name(position, detailed_position)
+            low_sample_confidence = False
             
             if use_pillar_scoring:
-                fit_score = self._calculate_pillar_fit(features, position_group)
+                # Score on a shrunk copy so low-minute noise doesn't distort
+                # the fit score - but keep `features` (below, in PlayerFit.stats)
+                # as the player's real, unshrunk numbers. The UI should always
+                # show what actually happened on the pitch; only the score
+                # calculation gets the confidence adjustment.
+                scoring_features = self._shrink_low_minute_features(features, position_group, minutes)
+                low_sample_confidence = minutes < self.FULL_CONFIDENCE_MINUTES
+                role = get_player_role(detailed_position, position, position_group)
+                fit_score = self._calculate_pillar_fit(scoring_features, position_group, role=role)
             else:
                 fit_score = self._calculate_weighted_fit(features, position_group)
             
-            classification = self._classify_score(fit_score)
+            classification = self._classify_score(fit_score, position_group if use_pillar_scoring else None)
             
             self.squad_fit.append(PlayerFit(
                 name=profile.get("name", "Unknown"),
@@ -2232,7 +2373,8 @@ class SquadFitAnalyzer:
                 age=profile.get("age", 25),
                 fit_score=round(fit_score, 1),
                 classification=classification,
-                stats=features
+                stats=features,
+                low_sample_confidence=low_sample_confidence
             ))
         
         self.squad_fit.sort(key=lambda x: x.fit_score, reverse=True)
@@ -2272,6 +2414,10 @@ class SquadFitAnalyzer:
             print(f"\n  Building league percentiles from {len(league_player_stats)} players...")
         
         position_features = defaultdict(lambda: defaultdict(list))
+        # Keep each qualifying player's full feature dict too (not just per-feature
+        # arrays) so _build_quantile_thresholds can score every league player the
+        # same way a squad player is scored, position group by position group.
+        self._league_players_by_group = defaultdict(list)
         
         for p in league_player_stats:
             minutes = p.get("player_season_minutes", 0) or 0
@@ -2317,18 +2463,135 @@ class SquadFitAnalyzer:
             
             for feat, val in features.items():
                 position_features[group][feat].append(val)
+            self._league_players_by_group[group].append(features)
         
         self.league_percentiles = {}
+        # Position-group mean per feature - the "we don't know yet, assume
+        # average" reference point used by _shrink_low_minute_features to
+        # pull sparse-sample squad players back from noisy extrapolated
+        # per-90 values (see calculate_fit_scores_from_profiles).
+        self.league_averages = {}
         for group in ["GK", "DEF", "MID", "ATT"]:
             self.league_percentiles[group] = {}
+            self.league_averages[group] = {}
             for feat in PLAYER_FIT_FEATURES:
                 vals = sorted(position_features[group].get(feat, [0]))
                 self.league_percentiles[group][feat] = vals
+                self.league_averages[group][feat] = sum(vals) / len(vals) if vals else 0.0
         
         if verbose:
             for group in ["GK", "DEF", "MID", "ATT"]:
                 n = len(position_features[group].get("pass_accuracy", []))
                 print(f"    {group}: {n} players")
+
+    # Minutes at which a squad player's per-90 stats are treated as fully
+    # reliable (shrinkage weight = 1.0, i.e. no blending with the position
+    # average). Below this, sparse counting stats (a rare event like a key
+    # pass or tackle simply not occurring yet in a short sample) get pulled
+    # toward the position-group mean in proportion to how little we've seen -
+    # rather than being linearly extrapolated to a per-90 rate and penalised
+    # for bad luck. Chosen above the league benchmark floor (270 min) so
+    # confidence keeps rising for a while even after a player clears that bar.
+    FULL_CONFIDENCE_MINUTES = 450
+
+    def _shrink_low_minute_features(self, features: Dict, position_group: str, minutes: float) -> Dict:
+        """
+        Blend a squad player's per-90 features toward the position-group
+        league average, weighted by how many minutes they've actually
+        played. A player at FULL_CONFIDENCE_MINUTES or above is returned
+        unchanged; a player with very few minutes ends up close to the
+        position average instead of their own noisy extrapolated rate.
+
+        No-op (returns features unchanged) if league_averages hasn't been
+        built yet - e.g. legacy/archetype scoring mode with no league pool.
+        """
+        averages = getattr(self, "league_averages", None)
+        if not averages or position_group not in averages:
+            return features
+
+        weight = max(0.0, min(1.0, minutes / self.FULL_CONFIDENCE_MINUTES))
+        if weight >= 1.0:
+            return features
+
+        pos_avg = averages[position_group]
+        shrunk = {}
+        for feat, val in features.items():
+            avg = pos_avg.get(feat, val)
+            shrunk[feat] = weight * val + (1 - weight) * avg
+        return shrunk
+
+    # Fraction of the league-wide score distribution assigned to each band,
+    # read top to bottom. Sums to 1.0. Chosen so a "typical" squad shows a
+    # minority of standouts and a minority of poor fits, with the bulk of
+    # players spread across the two middle bands - rather than a fixed score
+    # cutoff that may or may not suit any given manager's weight profile.
+    QUANTILE_BAND_SPLIT = {
+        "key_enabler": 0.20,        # top 20%
+        "good_fit": 0.30,           # next 30%   (20-50th percentile from top)
+        "system_dependent": 0.30,   # next 30%   (50-80th percentile from top)
+        # remaining 0.20 = potentially_marginalised (bottom 20%)
+    }
+
+    def _build_quantile_thresholds(self, verbose: bool = True):
+        """
+        Compute classification cutoffs from the real distribution of scores
+        for THIS manager's weight profile, rather than fixed absolute values.
+
+        For each position group, scores every qualifying league player (not
+        just the target squad) using the same _calculate_pillar_fit weights
+        the squad is scored with, then takes quantile cut-points of that
+        distribution. This means "Key Enabler" always means "top slice of
+        the league at this position, under this manager's specific demands"
+        - it self-calibrates per manager instead of relying on one hand-tuned
+        set of numbers that may suit some weight profiles and not others.
+
+        Requires _build_league_percentiles to have already populated
+        self._league_players_by_group. Falls back silently (thresholds stay
+        empty, _classify_score uses FIT_THRESHOLDS) if that data isn't
+        available - e.g. legacy/Sportsmonks scoring mode.
+        """
+        self.position_thresholds = {}
+
+        if not getattr(self, "_league_players_by_group", None):
+            if verbose:
+                print("  ⚠ No league player pool available - quantile thresholds skipped, "
+                      "falling back to fixed FIT_THRESHOLDS")
+            return
+
+        for group in ["GK", "DEF", "MID", "ATT"]:
+            players = self._league_players_by_group.get(group, [])
+            if len(players) < 20:
+                # Too few qualifying players to derive a stable distribution
+                # for this position group - fall back to fixed thresholds
+                # for this group only, other groups are unaffected.
+                if verbose:
+                    print(f"    {group}: only {len(players)} qualifying players - "
+                          f"falling back to fixed thresholds for this group")
+                continue
+
+            scores = sorted(
+                self._calculate_pillar_fit(feats, group) for feats in players
+            )
+            n = len(scores)
+
+            def _cut(fraction_from_top):
+                idx = min(n - 1, max(0, round(n * (1 - fraction_from_top))))
+                return scores[idx]
+
+            self.position_thresholds[group] = {
+                "key_enabler": _cut(self.QUANTILE_BAND_SPLIT["key_enabler"]),
+                "good_fit": _cut(self.QUANTILE_BAND_SPLIT["key_enabler"]
+                                  + self.QUANTILE_BAND_SPLIT["good_fit"]),
+                "system_dependent": _cut(self.QUANTILE_BAND_SPLIT["key_enabler"]
+                                          + self.QUANTILE_BAND_SPLIT["good_fit"]
+                                          + self.QUANTILE_BAND_SPLIT["system_dependent"]),
+            }
+
+            if verbose:
+                t = self.position_thresholds[group]
+                print(f"    {group}: n={n}  Key Enabler >= {t['key_enabler']:.1f}  "
+                      f"Good Fit >= {t['good_fit']:.1f}  "
+                      f"System Dependent >= {t['system_dependent']:.1f}")
     
     def _get_percentile(self, value: float, position_group: str, feature: str) -> float:
         """Get percentile rank (0-100) of a value within its position group."""
@@ -2341,7 +2604,7 @@ class SquadFitAnalyzer:
         rank = bisect.bisect_left(sorted_vals, value)
         return round(rank / len(sorted_vals) * 100, 1)
     
-    def _compute_dynamic_weights(self, position_group: str) -> Dict[str, float]:
+    def _compute_dynamic_weights(self, position_group: str, role: str = None) -> Dict[str, float]:
         """
         Compute position-specific feature weights from manager's 8-pillar DNA.
         
@@ -2355,6 +2618,16 @@ class SquadFitAnalyzer:
         
         GK override: Goalkeepers are evaluated primarily on pass_accuracy
         (distribution quality) with reduced weight on outfield-only metrics.
+
+        If `role` is supplied (one of the 8 fine PLAYER_ROLES - see
+        get_player_role) and train_position_demands.py has produced an
+        empirically-derived weights file, that file's role-specific demand
+        strengths are used in place of the hand-authored PILLAR_PLAYER_DEMANDS
+        entry for this pillar, wherever it has coverage for this exact
+        (pillar, role) pair. Any pillar/role combination the derived file
+        doesn't cover falls straight back to the hand-authored coarse-group
+        table below - this is deliberately a per-cell fallback, not
+        all-or-nothing, so partial data-driven coverage still helps.
         """
         # Low base ensures pillar variation dominates weight profiles
         weights = {f: 0.1 for f in PLAYER_FIT_FEATURES}
@@ -2368,10 +2641,17 @@ class SquadFitAnalyzer:
         
         # Pillar-driven weight accumulation with amplifier
         PILLAR_AMPLIFIER = 2.0
+        data_driven = _load_data_driven_demands()
         
         for pillar_key, demands_by_pos in PILLAR_PLAYER_DEMANDS.items():
             pillar_score = self.manager_pillar_scores.get(pillar_key, 50) / 100.0
-            demands = demands_by_pos.get(position_group, {})
+
+            demands = None
+            if data_driven and role:
+                demands = data_driven.get(pillar_key, {}).get(role)
+            if not demands:
+                demands = demands_by_pos.get(position_group, {})
+
             for feature, demand_strength in demands.items():
                 if feature in weights:
                     weights[feature] += pillar_score * demand_strength * PILLAR_AMPLIFIER
@@ -2402,14 +2682,34 @@ class SquadFitAnalyzer:
         
         return weights
     
-    def _calculate_pillar_fit(self, player_stats: Dict, position_group: str) -> float:
+    def _calculate_pillar_fit(self, player_stats: Dict, position_group: str, role: str = None) -> float:
         """
         Calculate fit score using pillar-driven weights and league percentiles.
         
         Score = weighted average of percentile ranks, producing a 0-100 score
         unique to this specific manager x position combination.
+
+        NOTE on scope: `role` (fine-grained - see get_player_role) only
+        affects which DEMAND WEIGHTS get used (via _compute_dynamic_weights).
+        The percentile lookup below (_get_percentile) still benchmarks against
+        the coarser position_group (GK/DEF/MID/ATT) pool built by
+        _build_league_percentiles. Expanding the percentile benchmark pool
+        itself to fine roles is a separate, larger change - single-league
+        percentile pools can get thin fast once split into 8 roles instead
+        of 4, and that risk deserves its own validation pass rather than
+        being bundled silently in here.
+        
+        NOTE: previously this applied a "spread adjustment" that multiplied
+        deviation from 50 by an arbitrary 1.5x constant, to counteract the
+        compression that comes from averaging several percentiles together.
+        That constant was never derived from data and wasn't doing real work
+        once classification moved to quantile-based thresholds (see
+        _classify_score / _build_quantile_thresholds below) - quantile cutoffs
+        are unaffected by any monotonic rescaling of the underlying score, so
+        stretching or not stretching changes the cosmetic number shown but not
+        which band a player lands in. Removed rather than kept as dead weight.
         """
-        weights = self._compute_dynamic_weights(position_group)
+        weights = self._compute_dynamic_weights(position_group, role=role)
         
         total_weighted_pct = 0
         total_weight = 0
@@ -2424,13 +2724,7 @@ class SquadFitAnalyzer:
         
         raw_score = total_weighted_pct / total_weight if total_weight > 0 else 50.0
         
-        # Spread adjustment: amplify deviations from the 50th-percentile centre
-        # to prevent scores from bunching in the 40-60 range.
-        # A player at raw 60 becomes 65; raw 40 becomes 35; raw 75 becomes 87.5
-        deviation = raw_score - 50.0
-        adjusted = 50.0 + deviation * 1.5
-        
-        return max(0, min(100, adjusted))
+        return max(0, min(100, raw_score))
     
     def _get_position_group_from_name(self, position: str, detailed_position: str = "") -> str:
         """Map position name string to group (GK/DEF/MID/ATT)."""
@@ -2687,12 +2981,29 @@ class SquadFitAnalyzer:
         except:
             return 25
     
-    def _classify_score(self, score: float) -> str:
-        if score >= FIT_THRESHOLDS["key_enabler"]:
+    def _classify_score(self, score: float, position_group: str = None) -> str:
+        """
+        Classify a fit score into a band.
+
+        Prefers quantile-based thresholds computed for this manager's actual
+        weight profile (self.position_thresholds, built by
+        _build_quantile_thresholds against the full league player pool for
+        this position group) - falls back to the fixed FIT_THRESHOLDS when
+        quantile thresholds aren't available for this position group (e.g.
+        legacy/archetype scoring mode, or too few qualifying league players
+        of this position to derive a stable distribution).
+        """
+        thresholds = FIT_THRESHOLDS
+        if position_group is not None:
+            pos_thresholds = getattr(self, "position_thresholds", {}).get(position_group)
+            if pos_thresholds:
+                thresholds = pos_thresholds
+
+        if score >= thresholds["key_enabler"]:
             return "Key Enabler"
-        elif score >= FIT_THRESHOLDS["good_fit"]:
+        elif score >= thresholds["good_fit"]:
             return "Good Fit"
-        elif score >= FIT_THRESHOLDS["system_dependent"]:
+        elif score >= thresholds["system_dependent"]:
             return "System Dependent"
         else:
             return "Potentially Marginalised"

@@ -8,8 +8,16 @@ The master model gives K-means the richest possible population to cluster agains
 Squad-specific analysis (ETL, fit scoring) still uses the user's selected league
 and season — only the clustering context is global.
 
+After the master model saves, this also runs train_position_demands.py's
+derivation step (position-specific pillar demand weights, empirically
+estimated from the same training population - see that file's docstring
+for details). That step is non-fatal: if it errors, the master pillar
+model above is still valid and this job still counts as a successful run.
+No separate GitHub Actions step is needed for it - one `python -m
+aegis.pretrain` call does both.
+
 Usage:
-    python -m aegis.pretrain         # train master model
+    python -m aegis.pretrain         # train master model + derive demand weights
     python -m aegis.pretrain --dry-run  # check connectivity without training
 
 Scheduled via .github/workflows/pretrain.yml — runs daily at 5am UTC.
@@ -149,6 +157,35 @@ def train_master(base_dir: str, verbose: bool = True) -> bool:
         }
         (MASTER_DIR / "meta.json").write_text(json.dumps(meta, indent=2))
         print(f"\n  ✓ Master model saved to pretrained/master/")
+
+        # ── Derive position-specific pillar demand weights ─────────────────
+        # Runs against the manager_profiles.csv just written above - reads
+        # its own pillar_pct_* + team_id/season_id columns, fetches
+        # player_season_stats for the same team-seasons, and regresses
+        # player features against team pillar scores (shrunk toward the
+        # hand-authored PILLAR_PLAYER_DEMANDS table). Writes
+        # pretrained/master/pillar_player_demands.json, which analysis.py
+        # picks up automatically at runtime if present - no code change
+        # needed beyond this file to get the improved weights live.
+        #
+        # Deliberately non-fatal: this step is an enhancement on top of the
+        # core pillar model, not a dependency of it. If it errors (network
+        # blip, a season temporarily unavailable, etc.) the master model
+        # trained above is still valid and should still be treated as a
+        # successful pretrain run - the existing hand-authored demand table
+        # remains in effect as the fallback either way.
+        try:
+            from aegis.train_position_demands import run as run_position_demands
+            ok = run_position_demands(verbose=verbose)
+            if not ok:
+                print("  ⚠ Position demand derivation did not complete - "
+                      "hand-authored PILLAR_PLAYER_DEMANDS remains in effect. "
+                      "Master pillar model above is unaffected.")
+        except Exception as e:
+            print(f"  ⚠ Position demand derivation failed - skipping: {e}")
+            print("  Hand-authored PILLAR_PLAYER_DEMANDS remains in effect. "
+                  "Master pillar model above is unaffected.")
+
         return True
 
 
