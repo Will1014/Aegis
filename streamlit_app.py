@@ -786,32 +786,14 @@ base_dir = _get_secret("BASE_DIR", _default_base)
 def _load_pretrained() -> dict | None:
     """
     Copy the master pre-trained model bundle to {base_dir}/training/.
+    The master model is trained on all leagues and all available seasons,
+    giving K-means the richest possible clustering population.
     Returns metadata dict on success, None if no bundle exists yet.
-
-    TEMPORARY DIAGNOSTIC VERSION — surfaces the exception this used to
-    swallow silently, plus checks REQUIRED_FILES directly before even
-    attempting the copy, so we can see exactly which of the two is failing.
-    Revert to the original try/except-return-None version once resolved.
     """
-    import streamlit as st
-    import traceback
-
     try:
-        from aegis.pretrain import load_pretrained, MASTER_DIR, REQUIRED_FILES
-
-        missing = [f for f in REQUIRED_FILES if not (MASTER_DIR / f).exists()]
-        if missing:
-            st.warning(f"⚠ Pretrained bundle incomplete at {MASTER_DIR}: missing {missing}")
-            return None
-
-        st.info(f"ℹ MASTER_DIR resolved to: {MASTER_DIR}")
-        result = load_pretrained(base_dir)
-        st.info(f"ℹ load_pretrained() returned: {result}")
-        return result
-
-    except Exception as e:
-        st.error(f"⚠ _load_pretrained failed: {e}")
-        st.code(traceback.format_exc())
+        from aegis.pretrain import load_pretrained
+        return load_pretrained(base_dir)
+    except Exception:
         return None
 
 
