@@ -213,16 +213,27 @@ def update_manifest():
 
 def load_pretrained(base_dir: str) -> dict | None:
     """
-    Copy the master pre-trained bundle into {base_dir}/data/processed/training/.
+    Copy the master pre-trained bundle into Config.PROCESSED_DIR/"training/".
     Returns metadata dict on success, None if the bundle doesn't exist yet.
     Called by streamlit_app.py immediately after login.
+
+    IMPORTANT: the copy target is derived from Config.PROCESSED_DIR (after
+    Config.set_base_dir(base_dir)) rather than hand-built from base_dir
+    directly. Previously this was `Path(base_dir) / "data" / "processed" /
+    "training"`, which silently diverged from Config.PROCESSED_DIR = 
+    BASE_DIR / "processed" (no "data" segment) - the copy succeeded and
+    reported success, but wrote one directory level away from where
+    SquadFitAnalyzer's default training_dir actually looks, so load_model()
+    still raised "Model not found" despite load_pretrained() returning a
+    success dict. Deriving both from the same Config attribute makes that
+    class of mismatch structurally impossible going forward.
     """
     if not all((MASTER_DIR / f).exists() for f in REQUIRED_FILES):
         return None
 
     from aegis import Config
     Config.set_base_dir(base_dir)
-    target = Path(base_dir) / "data" / "processed" / "training"
+    target = Config.PROCESSED_DIR / "training"
     target.mkdir(parents=True, exist_ok=True)
 
     for fname in REQUIRED_FILES:
