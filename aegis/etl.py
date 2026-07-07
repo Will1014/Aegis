@@ -864,6 +864,7 @@ class StatsBombETL:
         self.team_info = None
         self.team_match_stats = None
         self.player_season_stats = None
+        self.player_mapping = None
         self.lineups = None
         self.manager_info = None
         self.metadata = None
@@ -906,6 +907,7 @@ class StatsBombETL:
         self.team_info = _load("sb_team_info.json") or {}
         self.team_match_stats = _load("sb_team_match_stats.json") or []
         self.player_season_stats = _load("sb_player_season_stats.json") or []
+        self.player_mapping = _load("sb_player_mapping.json") or []
         self.lineups = _load("sb_lineups.json") or []
         self.manager_info = _load("sb_manager_info.json") or {}
         
@@ -913,6 +915,7 @@ class StatsBombETL:
         print(f"      ✓ Team: {self.team_info.get('name', 'Unknown')}")
         print(f"      ✓ Team match stats: {len(self.team_match_stats)} records")
         print(f"      ✓ Player season stats: {len(self.player_season_stats)} players")
+        print(f"      ✓ Player mapping: {len(self.player_mapping)} player-team blocks")
         print(f"      ✓ Manager: {self.manager_info.get('name', 'Unknown')}")
         return self
     
@@ -1318,6 +1321,55 @@ class StatsBombETL:
             }
         }
     
+    def _build_current_team_lookup(self) -> Dict[int, bool]:
+        """
+        Determine, per player, whether their MOST RECENT {competition, season,
+        team} block this season (per player_mapping data) is with the current
+        team — i.e. whether they're still actually on the squad, as opposed to
+        having merely accrued minutes here earlier in the season before a
+        transfer.
+
+        player_season_stats alone can't distinguish these two cases: a player
+        sold in the January window still shows up with team_id = old club for
+        any minutes they played before leaving. player_mapping tracks
+        earliest_match_date/most_recent_match_date per team block, so the block
+        with the latest most_recent_match_date tells us where they play now.
+
+        Returns {player_id: is_still_here}. Player IDs with no mapping data
+        are simply absent from the dict — callers should treat "no entry" as
+        "unknown, include by default" so a coverage gap in player_mapping
+        can never silently empty a squad.
+        """
+        lookup: Dict[int, bool] = {}
+        if not self.player_mapping:
+            return lookup
+
+        team_id = self.team_info.get("id")
+        team_name = (self.team_info.get("name") or "").lower()
+
+        blocks_by_player: Dict[int, list] = defaultdict(list)
+        for rec in self.player_mapping:
+            pid = rec.get("offline_player_id") or rec.get("live_player_id")
+            most_recent = rec.get("most_recent_match_date")
+            if pid is None or not most_recent:
+                continue
+            rec_team_id = rec.get("offline_team_id") or rec.get("live_team_id")
+            rec_team_name = (rec.get("team_name") or "").lower()
+            blocks_by_player[pid].append((most_recent, rec_team_id, rec_team_name))
+
+        for pid, blocks in blocks_by_player.items():
+            # Sort by most_recent_match_date (ISO yyyy-mm-dd — sorts correctly
+            # as a string) and take the latest block as "where they are now".
+            blocks.sort(key=lambda b: b[0])
+            _, latest_team_id, latest_team_name = blocks[-1]
+
+            lookup[pid] = (
+                (team_id is not None and latest_team_id == team_id)
+                or (bool(team_name) and team_name in latest_team_name)
+            )
+
+        return lookup
+
     def extract_squad_profiles(self):
         """
         Extract player profiles from StatsBomb player season stats.
@@ -1346,6 +1398,34 @@ class StatsBombETL:
                 p for p in self.player_season_stats
                 if team_name.lower() in (p.get("team_name", "") or "").lower()
             ]
+
+        # ── Exclude players who've since transferred elsewhere ──────────────
+        # team_id/team_name filtering above only tells us they played for this
+        # team AT SOME POINT this season, not that they're still here now.
+        current_team_lookup = self._build_current_team_lookup()
+        if current_team_lookup:
+            before_count = len(team_players)
+            departed = [
+                p for p in team_players
+                if current_team_lookup.get(p.get("player_id"), True) is False
+            ]
+            team_players = [
+                p for p in team_players
+                if current_team_lookup.get(p.get("player_id"), True) is not False
+            ]
+            if departed:
+                names = ", ".join(
+                    p.get("player_name", "Unknown") for p in departed[:8]
+                )
+                more = f" (+{len(departed) - 8} more)" if len(departed) > 8 else ""
+                print(f"      ✓ Excluded {len(departed)} departed player(s) "
+                      f"via player_mapping: {names}{more}")
+            else:
+                print(f"      ✓ Player mapping confirmed all {before_count} "
+                      f"candidates are current squad members")
+        else:
+            print("      ⚠ No player_mapping data — squad filtered by "
+                  "team_id/team_name only (departed players may still appear)")
         
         # Build player_id → position lookup from lineups
         lineup_positions = self._build_position_lookup_from_lineups()

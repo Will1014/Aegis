@@ -1160,12 +1160,24 @@ class StatsBombClient:
         competition_id: int = None,
         season_id: int = None,
         offline_player_id: int = None,
-        all_account_data: bool = False
+        all_account_data: bool = False,
+        use_cache: bool = True
     ) -> List[Dict]:
         """
         Get player ID mapping across StatsBomb systems.
-        
-        Useful for cross-referencing players across different data sources.
+
+        Each record represents one {competition, season, team} block a player
+        appeared in, with earliest_match_date / most_recent_match_date for that
+        block. This is the authoritative source for "which team is this player
+        CURRENTLY registered to this season" — unlike player_season_stats
+        (which only tells you a player accrued minutes for a team at some point
+        this season, even if they've since transferred away). See
+        API_Player_Mapping_v1.0.0.pdf for the worked mid-season-transfer example
+        this is designed around.
+
+        Deliberately called WITHOUT competition_id when checking current squad
+        membership, so cross-league transfers within a season (e.g. Championship
+        -> Premier League) are also caught — pass season_id only for that case.
         """
         v = self.versions["player_mapping"]
         params = []
@@ -1178,10 +1190,26 @@ class StatsBombClient:
             params.append(f"offline-player-id={offline_player_id}")
         if all_account_data:
             params.append("all-account-data=true")
-        
+
         param_str = "&".join(params)
+
+        cache_key = f"{competition_id or 'all'}_{season_id or 'all'}_{offline_player_id or 'all'}"
+        cache_file = Config.CACHE_DIR / f"sb_player_mapping_{cache_key}.json"
+
+        if use_cache and cache_file.exists():
+            cache_age = time.time() - cache_file.stat().st_mtime
+            if cache_age < 3600:
+                with open(cache_file) as f:
+                    return json.load(f)
+
         url = f"{self.alt_url}/api/{v}/player-mapping?{param_str}"
-        return self._request(url)
+        data = self._request(url)
+
+        Config.CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        with open(cache_file, "w") as f:
+            json.dump(data, f, indent=2)
+
+        return data
     
     # =========================================================================
     # DIAGNOSTICS
@@ -1305,7 +1333,23 @@ class StatsBombClient:
         print(f"\n[4/5] Fetching player season stats")
         player_season_stats = self.get_player_season_stats(competition_id, season_id)
         print(f"      ✓ {len(player_season_stats)} players in season")
-        
+
+        # 4b. Fetch player mapping (season-wide, no competition filter) so we
+        # can tell whether a player who accrued minutes for this team earlier
+        # in the season has SINCE transferred elsewhere — player_season_stats
+        # alone can't tell us that. Non-fatal: if this call fails, squad
+        # extraction falls back to the old team_id-only filter.
+        print(f"\n[4b/5] Fetching player mapping (current squad membership)")
+        try:
+            player_mapping = self.get_player_mapping(
+                season_id=season_id, all_account_data=True
+            )
+            print(f"      ✓ {len(player_mapping)} player-team blocks this season")
+        except Exception as e:
+            print(f"      ⚠ Player mapping unavailable — falling back to "
+                  f"season-stats-only squad filtering: {e}")
+            player_mapping = []
+
         # 5. Fetch lineups for formation analysis (sample of matches)
         print(f"\n[5/5] Fetching lineups for formation analysis")
         lineups = []
@@ -1325,6 +1369,7 @@ class StatsBombClient:
             team_info=team_info,
             team_match_stats=team_match_stats,
             player_season_stats=player_season_stats,
+            player_mapping=player_mapping,
             lineups=lineups,
             manager_info=manager_info,
             competition_id=competition_id,
@@ -1340,6 +1385,7 @@ class StatsBombClient:
             "team_info": team_info,
             "team_match_stats": team_match_stats,
             "player_season_stats": player_season_stats,
+            "player_mapping": player_mapping,
             "lineups": lineups,
             "manager_info": manager_info,
             "competition_id": competition_id,
@@ -1414,7 +1460,8 @@ class StatsBombClient:
         lineups,
         manager_info,
         competition_id,
-        season_id
+        season_id,
+        player_mapping=None
     ):
         """Save fetched StatsBomb data to files."""
         Config.DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -1430,6 +1477,9 @@ class StatsBombClient:
         
         with open(Config.DATA_DIR / "sb_player_season_stats.json", "w") as f:
             json.dump(player_season_stats, f, indent=2)
+
+        with open(Config.DATA_DIR / "sb_player_mapping.json", "w") as f:
+            json.dump(player_mapping or [], f, indent=2)
         
         with open(Config.DATA_DIR / "sb_lineups.json", "w") as f:
             json.dump(lineups, f, indent=2)
