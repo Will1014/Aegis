@@ -138,7 +138,7 @@ def train_master(base_dir: str, verbose: bool = True) -> bool:
             master.save(verbose=True)
         except Exception as e:
             print(f"  ✗ fit/save failed: {e}")
-            import traceback; traceback.print_exc()
+            traceback.print_exc()
             return False
 
         # ── Verify output files ───────────────────────────────────────────
