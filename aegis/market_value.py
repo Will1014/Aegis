@@ -358,7 +358,20 @@ def train_market_value_model(
     X_test, y_test = _encode(test_df), test_df["log_fee"].astype(float)
 
     model = HistGradientBoostingRegressor(
-        max_depth=6, learning_rate=0.05, max_iter=300, random_state=42
+        max_depth=6, learning_rate=0.05, max_iter=300, random_state=42,
+        # We already hold out a deliberate time-based test set above (see
+        # docstring — this avoids the model leaking future transfer prices
+        # into training). Leaving sklearn's default early_stopping='auto'
+        # enabled would carve out a SECOND, randomly-sampled validation
+        # split from inside our training data, silently undermining that.
+        # It's also the most likely source of a "window shape cannot be
+        # larger than input array shape" crash — that error comes from
+        # sklearn's internal early-stopping convergence check, which
+        # compares a window of the last n_iter_no_change scores; on a
+        # training set this size, that window can end up larger than the
+        # number of scores actually recorded. Disabling it removes that
+        # whole code path.
+        early_stopping=False,
     )
     model.fit(X_train, y_train)
 
@@ -419,13 +432,23 @@ _URGENCY_PERCENTILES = {
 }
 
 
+# Leagues confirmed to have solid Transfermarkt scrape coverage (checked
+# against the dataset's own competition_codes scope — see LEAGUE_CODE_MAP
+# comment above). Championship/League One/League Two are NOT in this set.
+_KNOWN_GOOD_COVERAGE = {"GB1", "NL1"}
+
+# Below this many matched clubs, a league's median club value is too thin
+# a sample to trust as representative of the whole league.
+_MIN_CLUBS_FOR_CONFIDENCE = 10
+
+
 def estimate_recruitment_cost_band(
     pos_group: str,
     competition_id: int,
     urgency: str,
     model_bundle: Optional[Tuple[Any, Dict[str, Any]]],
     client: Optional[MarketValueClient] = None,
-) -> Tuple[float, float]:
+) -> Dict[str, Any]:
     """
     Data-driven replacement for the old cost_map.get(pos_group, (20, 50)).
 
@@ -436,25 +459,55 @@ def estimate_recruitment_cost_band(
     trained model is available (e.g. first run before the nightly pretrain
     job has produced pretrained/market_value/).
 
-    Returns (cost_low, cost_high) in £M, matching the existing CSV schema.
+    Unlike player-level TMV, there's no "matched a real transfer" tier
+    possible here — every number is a projection from a synthetic profile,
+    never a specific real transfer target. So confidence instead tracks how
+    much real league data underpins that projection: whether a model exists
+    at all, whether the club was mapped to a real Transfermarkt league, how
+    many real clubs were found to compute that league's market tier, and
+    whether it's a league already known to have thin Transfermarkt coverage
+    (see LEAGUE_CODE_MAP).
+
+    Returns a dict:
+        cost_low, cost_high  — £M, matching the existing CSV schema
+        tier                 — "league_calibrated" | "league_thin" |
+                                "no_league_context" | "fallback_generic"
+        tier_label, tooltip, flag_symbol, flag_class — for UI display,
+                                same convention as the Player Dossier TMV flag
     """
+    def _fallback(reason: str) -> Dict[str, Any]:
+        lo, hi = _FALLBACK_COST_MAP.get(pos_group, (20, 50))
+        return {
+            "cost_low": lo, "cost_high": hi,
+            "tier": "fallback_generic",
+            "tier_label": "generic placeholder",
+            "flag_symbol": "○", "flag_class": "cost-flag--fallback",
+            "tooltip": (
+                "Not calculated from real transfer data — the market-value "
+                "model hasn't been trained yet, or failed on this position. "
+                f"Showing a static generic estimate. {reason}".strip()
+            ),
+        }
+
     if model_bundle is None:
-        return _FALLBACK_COST_MAP.get(pos_group, (20, 50))
+        return _fallback("")
 
     model, metadata = model_bundle
     position_map = metadata["position_map"]
     tm_position = POSITION_GROUP_TO_TM.get(pos_group)
     if tm_position not in position_map:
-        return _FALLBACK_COST_MAP.get(pos_group, (20, 50))
+        return _fallback(f"Position '{pos_group}' not found in the trained model.")
 
     client = client or MarketValueClient()
     tm_league = LEAGUE_CODE_MAP.get(competition_id)
 
+    n_clubs_matched = 0
     try:
         clubs = client.get_clubs()
         if tm_league:
             league_clubs = clubs[clubs["domestic_competition_id"] == tm_league]
-            club_tier = float(league_clubs["total_market_value"].median()) if len(league_clubs) else \
+            n_clubs_matched = len(league_clubs)
+            club_tier = float(league_clubs["total_market_value"].median()) if n_clubs_matched else \
                 float(clubs["total_market_value"].median())
         else:
             club_tier = float(clubs["total_market_value"].median())
@@ -485,7 +538,50 @@ def estimate_recruitment_cost_band(
     cost_high = round(hi_eur * EUR_TO_GBP / 1_000_000, 1)
     if cost_high <= cost_low:
         cost_high = cost_low + 5
-    return cost_low, cost_high
+
+    # ── Confidence tier ──────────────────────────────────────────────────
+    if tm_league is None:
+        tier = "no_league_context"
+        tier_label = "no league context"
+        flag_symbol, flag_class = "◐", "cost-flag--no-league"
+        tooltip = (
+            "No league was specified for this estimate, so it's calculated "
+            "against the overall Transfermarkt market median across all "
+            "clubs rather than this specific league. Based on a market-rate "
+            "model trained on historical transfer fees, but not "
+            "league-specific."
+        )
+    elif tm_league in _KNOWN_GOOD_COVERAGE and n_clubs_matched >= _MIN_CLUBS_FOR_CONFIDENCE:
+        tier = "league_calibrated"
+        tier_label = f"{tm_league} · {n_clubs_matched} clubs"
+        flag_symbol, flag_class = "●", "cost-flag--calibrated"
+        tooltip = (
+            f"Calculated from {n_clubs_matched} real club valuations in "
+            f"this league, fed into a market-rate model trained on "
+            f"historical Transfermarkt transfer fees. The strongest "
+            f"available confidence tier — still a projection from a "
+            f"synthetic player profile, never a specific real transfer target."
+        )
+    else:
+        tier = "league_thin"
+        if tm_league not in _KNOWN_GOOD_COVERAGE:
+            reason = "this league has limited Transfermarkt scrape coverage"
+        else:
+            reason = f"only {n_clubs_matched} clubs were matched in this league"
+        tier_label = f"{tm_league} · thin data"
+        flag_symbol, flag_class = "◐", "cost-flag--thin"
+        tooltip = (
+            f"League-specific estimate, but {reason} — treat this as "
+            f"indicative rather than precise. Based on {n_clubs_matched} "
+            f"matched club valuations."
+        )
+
+    return {
+        "cost_low": cost_low, "cost_high": cost_high,
+        "tier": tier, "tier_label": tier_label,
+        "flag_symbol": flag_symbol, "flag_class": flag_class,
+        "tooltip": tooltip,
+    }
 
 
 def get_player_market_value(
@@ -542,4 +638,4 @@ if __name__ == "__main__":
 
     print("\nSample recruitment cost band (Premier League, ATT, Critical gap):")
     band = estimate_recruitment_cost_band("ATT", 2, "Critical", (model, metadata), client)
-    print(f"  £{band[0]}M - £{band[1]}M")
+    print(f"  £{band['cost_low']}M - £{band['cost_high']}M  [{band['tier']}] {band['tier_label']}")

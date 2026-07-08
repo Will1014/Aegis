@@ -30,6 +30,7 @@ import json
 import shutil
 import argparse
 import tempfile
+import traceback
 from pathlib import Path
 from datetime import datetime, timezone
 from typing import List, Optional
@@ -174,6 +175,8 @@ def train_master(base_dir: str, verbose: bool = True) -> bool:
         except Exception as e:
             print(f"  ⚠ Market value training failed — skipping (recruitment costs "
                   f"will fall back to static estimates): {e}")
+            print("  Full traceback (for diagnosis — training still continues non-fatally):")
+            traceback.print_exc()
 
         return True
 
