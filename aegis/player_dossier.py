@@ -91,6 +91,9 @@ _POSITION_GROUPS: Dict[str, List[int]] = {
     "Attacker":    [17, 18, 19, 20, 21, 22, 23, 24, 25],
 }
 
+# Broad position group filter options, in display order (used by UI filters)
+POSITION_GROUP_OPTIONS: List[str] = ["Goalkeeper", "Defender", "Midfielder", "Attacker"]
+
 # Human-readable position labels
 _POSITION_LABELS: Dict[int, str] = {
     1: "GK", 2: "RB", 3: "RCB", 4: "CB", 5: "LCB", 6: "LB",
@@ -274,16 +277,53 @@ class PlayerDossierGenerator:
 
         return None
 
-    def list_players(self, min_minutes: int = MIN_MINUTES) -> List[str]:
-        """Return sorted list of player names meeting minimum minutes."""
+    def list_players(
+        self,
+        min_minutes: int = MIN_MINUTES,
+        position_group: Optional[str] = None,
+    ) -> List[str]:
+        """
+        Return sorted list of player names meeting minimum minutes.
+
+        Args:
+            min_minutes: Minimum season minutes to be included.
+            position_group: Optional filter — one of "Goalkeeper", "Defender",
+                "Midfielder", "Attacker" (see POSITION_GROUP_OPTIONS). If None,
+                players from all positions are returned.
+        """
         names = []
         for r in self.raw_stats:
             mins = _safe_float(_get(r, "minutes"), 0)
-            if mins >= min_minutes:
-                n = _get(r, "player_name") or ""
-                if n:
-                    names.append(n)
+            if mins < min_minutes:
+                continue
+            if position_group and self._position_group(r) != position_group:
+                continue
+            n = _get(r, "player_name") or ""
+            if n:
+                names.append(n)
         return sorted(set(names))
+
+    def list_players_with_positions(
+        self, min_minutes: int = MIN_MINUTES
+    ) -> List[Tuple[str, str]]:
+        """
+        Return sorted list of (player_name, position_group) tuples meeting
+        minimum minutes. Useful for building a position filter in a UI
+        without needing to re-fetch or re-scan raw_stats when the filter
+        changes.
+        """
+        pairs = []
+        seen = set()
+        for r in self.raw_stats:
+            mins = _safe_float(_get(r, "minutes"), 0)
+            if mins < min_minutes:
+                continue
+            n = _get(r, "player_name") or ""
+            if not n or n in seen:
+                continue
+            seen.add(n)
+            pairs.append((n, self._position_group(r)))
+        return sorted(pairs, key=lambda p: p[0])
 
     def generate(
         self,
