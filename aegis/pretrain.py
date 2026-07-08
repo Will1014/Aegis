@@ -209,8 +209,21 @@ def update_manifest():
 
 def load_pretrained(base_dir: str) -> dict | None:
     """
-    Copy the master pre-trained bundle into {base_dir}/data/processed/training/.
-    Returns metadata dict on success, None if the bundle doesn't exist yet.
+    Copy the master pre-trained bundle into Config.PROCESSED_DIR / "training"
+    (i.e. {base_dir}/processed/training/) — the exact path SquadFitAnalyzer
+    and ManagerDNATrainer read from by default. Returns metadata dict on
+    success, None if the bundle doesn't exist yet.
+
+    IMPORTANT: build the target path from Config.PROCESSED_DIR itself, not
+    by independently reconstructing it from base_dir. A previous version of
+    this function hardcoded {base_dir}/data/processed/training — an extra
+    "data" segment that doesn't match Config.PROCESSED_DIR's actual
+    resolution ({base_dir}/processed). The copy silently succeeded into a
+    location nothing ever read from, so load_model() kept failing with
+    "Model not found" even though this function reported success. Deriving
+    the path from Config.PROCESSED_DIR instead of duplicating the join
+    logic makes it structurally impossible for these two to drift apart.
+
     Called by streamlit_app.py immediately after login.
     """
     if not all((MASTER_DIR / f).exists() for f in REQUIRED_FILES):
@@ -218,7 +231,7 @@ def load_pretrained(base_dir: str) -> dict | None:
 
     from aegis import Config
     Config.set_base_dir(base_dir)
-    target = Path(base_dir) / "data" / "processed" / "training"
+    target = Config.PROCESSED_DIR / "training"
     target.mkdir(parents=True, exist_ok=True)
 
     for fname in REQUIRED_FILES:
