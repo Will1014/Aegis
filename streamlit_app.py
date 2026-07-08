@@ -741,8 +741,9 @@ for key, default in [
     ("squad_a", None), ("squad_b", None),
     ("authenticated", False),
     ("dossier_html", None), ("dossier_player", ""),
-    ("dossier_player_list", []), ("d_league_last", ""),
+    ("dossier_player_list", []), ("dossier_player_positions", {}), ("d_league_last", ""),
     ("shortlist", None), ("shortlist_club", None),
+    ("tc_data", None),
     ("report_sections", None),
     # Squad filter keys — must exist before any tab renders to prevent tab jump
     ("squad_filter_single", "All"),
@@ -995,11 +996,13 @@ with st.sidebar:
     st.divider()
 
     # ── Mode toggle ──
-    mode = st.radio("Mode", ["Single Analysis", "Compare Scenarios", "Shortlist", "Player Dossier"],
+    mode = st.radio("Mode", ["Manager Fit Report", "Compare Managers", "Shortlist",
+                              "Player Dossier", "Transfer Costs"],
                     horizontal=False, label_visibility="collapsed")
-    is_compare   = mode == "Compare Scenarios"
-    is_shortlist = mode == "Shortlist"
-    is_dossier   = mode == "Player Dossier"
+    is_compare         = mode == "Compare Managers"
+    is_shortlist       = mode == "Shortlist"
+    is_dossier         = mode == "Player Dossier"
+    is_transfer_costs  = mode == "Transfer Costs"
 
     st.divider()
 
@@ -1109,10 +1112,31 @@ with st.sidebar:
         # Reset player list if league changes
         if st.session_state.get("d_league_last") != d_league:
             st.session_state.dossier_player_list = []
+            st.session_state.dossier_player_positions = {}
             st.session_state["d_league_last"] = d_league
 
-        # Load player list for selected league/season
+        d_position = st.selectbox(
+            "Position",
+            ["All", "Goalkeeper", "Defender", "Midfielder", "Attacker"],
+            key="d_position",
+            help="Filters the player list below by broad position group. "
+                 "Click Load Players first to populate the list for this league.",
+        )
+
+        # Player list — filtered by position if a list has been loaded and
+        # a specific position is selected. Positions come from the same
+        # fetch as the name list (list_players_by_position), no extra call.
         player_list = st.session_state.dossier_player_list
+        player_positions = st.session_state.get("dossier_player_positions", {})
+        if player_list and d_position != "All":
+            player_list = [n for n in player_list if player_positions.get(n) == d_position]
+
+        if player_list:
+            d_player = st.selectbox("Player", player_list, key="d_player_select")
+        else:
+            d_player = st.text_input("Player name", key="d_player_text",
+                                     placeholder="e.g. Tae-Seok Lee")
+
         if has_creds and st.button("🔍  Load Players", key="d_load",
                                    use_container_width=True):
             with st.spinner("Loading player list…"):
@@ -1125,17 +1149,18 @@ with st.sidebar:
                     sb = StatsBombClient()
                     _stats = sb.get_player_season_stats(d_league_id, season_id)
                     gen = PlayerDossierGenerator(_stats)
-                    player_list = gen.list_players(min_minutes=MIN_MINUTES)
-                    st.session_state.dossier_player_list = player_list
-                    st.success(f"✓ {len(player_list)} players loaded")
+                    st.session_state.dossier_player_list = gen.list_players(min_minutes=MIN_MINUTES)
+                    st.session_state.dossier_player_positions = gen.list_players_by_position(min_minutes=MIN_MINUTES)
+                    st.success(f"✓ {len(st.session_state.dossier_player_list)} players loaded")
+                    # Player widget is coded above this button, so within
+                    # THIS run it already read the old (empty) list — without
+                    # forcing an immediate rerun it would show the success
+                    # message but leave the Player field looking stale until
+                    # the next unrelated interaction. Rerun now so the
+                    # freshly loaded list shows up in the same click.
+                    st.rerun()
                 except Exception as exc:
                     st.error(f"Could not load players: {exc}")
-
-        if player_list:
-            d_player = st.selectbox("Player", player_list, key="d_player_select")
-        else:
-            d_player = st.text_input("Player name", key="d_player_text",
-                                     placeholder="e.g. Tae-Seok Lee")
 
         # Optional enrichment — only fields not auto-populated from StatsBomb
         # or the market-value model. TMV is no longer here — it's estimated
@@ -1169,6 +1194,19 @@ with st.sidebar:
         st.write("")
         league_id_b, team_b, coach_b = _scenario_inputs(
             "Scenario B", "b", "scenario-b")
+    elif is_transfer_costs:
+        st.markdown(
+            '<span class="scenario-header scenario-a">Transfer Costs</span>',
+            unsafe_allow_html=True)
+        st.caption("Recruitment cost bands and league market context, "
+                   "built from the transfermarkt-datasets project — "
+                   "independent of the StatsBomb manager-fit pipeline.")
+        tc_league = st.selectbox(
+            "League", list(COMPETITION_OPTIONS.keys()), key="tc_league")
+        tc_load_clicked = st.button(
+            "💰  Load Market Data", key="tc_load", use_container_width=True)
+        league_id_a = team_a = coach_a = None
+        league_id_b = team_b = coach_b = None
     else:
         league_id_a, team_a, coach_a = _scenario_inputs(
             "Analysis", "single", "scenario-a")
@@ -1179,13 +1217,13 @@ with st.sidebar:
 
     st.divider()
 
-    if not is_dossier:
+    if not is_dossier and not is_transfer_costs:
         run_clicked = st.button("🚀  Run Analysis", use_container_width=True,
                                 type="primary")
     else:
         run_clicked = False
 
-    if not is_dossier and st.button("🗑️  Clear Cache", use_container_width=True):
+    if not is_dossier and not is_transfer_costs and st.button("🗑️  Clear Cache", use_container_width=True):
         _run_cached.clear()
         discover_teams_and_managers.clear()
         st.toast("Cache cleared — next run will fetch fresh data.")
@@ -1303,6 +1341,145 @@ if is_dossier:
   <div style="font-size:12px; color:#333;">Height and strong foot are auto-detected from StatsBomb. Add TMV and contract in the expander if known.</div>
 </div>
 """, unsafe_allow_html=True)
+
+    st.stop()
+
+
+# ══════════════════════════════════════════════════════════════
+# TRANSFER COSTS MODE
+# ══════════════════════════════════════════════════════════════
+
+if is_transfer_costs:
+    st.markdown("### 💰 Transfer Cost Intelligence")
+    st.caption(
+        "Recruitment cost bands and league market context, built from "
+        "[transfermarkt-datasets](https://github.com/dcaribou/transfermarkt-datasets) "
+        "— independent of your StatsBomb credentials."
+    )
+
+    _tc_league_id = COMPETITION_OPTIONS.get(
+        st.session_state.get("tc_league", list(COMPETITION_OPTIONS.keys())[0]), 2)
+    _tc_league_name = st.session_state.get("tc_league", "Premier League")
+
+    if tc_load_clicked:
+        with st.spinner("Fetching Transfermarkt data and league market context…"):
+            try:
+                from aegis.market_value import (
+                    MarketValueClient, LEAGUE_CODE_MAP, POSITION_GROUP_TO_TM, EUR_TO_GBP,
+                )
+                from aegis.pretrain import load_pretrained_market_value
+
+                client = MarketValueClient()
+                bundle = load_pretrained_market_value()
+                clubs = client.get_clubs()
+
+                tm_code = LEAGUE_CODE_MAP.get(_tc_league_id)
+                league_clubs = clubs[clubs["domestic_competition_id"] == tm_code] if tm_code else clubs.iloc[0:0]
+
+                st.session_state.tc_data = {
+                    "league_name": _tc_league_name,
+                    "league_id": _tc_league_id,
+                    "tm_code": tm_code,
+                    "n_clubs": len(league_clubs),
+                    "median_value_gbp_m": (
+                        round(league_clubs["total_market_value"].median() * EUR_TO_GBP / 1_000_000, 1)
+                        if len(league_clubs) else None
+                    ),
+                    "max_value_gbp_m": (
+                        round(league_clubs["total_market_value"].max() * EUR_TO_GBP / 1_000_000, 1)
+                        if len(league_clubs) else None
+                    ),
+                    "min_value_gbp_m": (
+                        round(league_clubs["total_market_value"].min() * EUR_TO_GBP / 1_000_000, 1)
+                        if len(league_clubs) else None
+                    ),
+                    "model_trained": bundle is not None,
+                    "model_meta": bundle[1] if bundle else None,
+                }
+                st.success("✓ Market data loaded")
+            except Exception as exc:
+                st.error(f"Could not load market data: {exc}")
+                st.session_state.tc_data = None
+
+    tc_data = st.session_state.get("tc_data")
+
+    if not tc_data:
+        st.markdown("""
+<div style="text-align:center; padding:60px 0; color:#555;">
+  <div style="font-size:40px; margin-bottom:16px; opacity:0.3">💰</div>
+  <div style="font-size:14px; margin-bottom:8px;">Select a league and click Load Market Data.</div>
+  <div style="font-size:12px; color:#333;">Shows league squad-value context and estimated recruitment cost bands by position and urgency.</div>
+</div>
+""", unsafe_allow_html=True)
+        st.stop()
+
+    # Coverage caveat — Championship/League One/League Two aren't in the
+    # transfermarkt-datasets scrape scope (competition_codes var), so
+    # numbers for those leagues are lower-confidence. Premier League and
+    # Eredivisie are well covered.
+    if tc_data["league_id"] in (3, 4, 5):
+        st.warning(
+            f"⚠️ {tc_data['league_name']} has limited coverage in the Transfermarkt "
+            "dataset — its scrape scope doesn't include English tiers below the "
+            "Premier League. Treat these numbers as lower-confidence than "
+            "Premier League or Eredivisie estimates.",
+            icon="⚠️",
+        )
+
+    if not tc_data["model_trained"]:
+        st.info(
+            "ℹ️ The recruitment-cost model hasn't been trained yet (first "
+            "deploy, or last night's training run failed). Showing static "
+            "fallback estimates — these will become data-driven once the "
+            "nightly pretrain job completes.",
+            icon="ℹ️",
+        )
+
+    st.write("")
+    st.markdown(f"**{tc_data['league_name']} — Squad Value Context** "
+               f"({tc_data['n_clubs']} clubs matched)")
+
+    if tc_data["median_value_gbp_m"] is not None:
+        c1, c2, c3 = st.columns(3)
+        c1.markdown(metric_card(f"£{tc_data['min_value_gbp_m']:.0f}M", "Lowest Squad Value"), unsafe_allow_html=True)
+        c2.markdown(metric_card(f"£{tc_data['median_value_gbp_m']:.0f}M", "Median Squad Value", "orange"), unsafe_allow_html=True)
+        c3.markdown(metric_card(f"£{tc_data['max_value_gbp_m']:.0f}M", "Highest Squad Value"), unsafe_allow_html=True)
+    else:
+        st.caption("No club market-value data matched for this league.")
+
+    st.write("")
+    st.markdown("**Estimated Recruitment Cost by Position & Urgency**")
+    st.caption(
+        "Critical = need a proven upgrade (top of the market-value distribution "
+        "for this position/league). Medium = a squad-depth addition can suffice."
+    )
+
+    try:
+        from aegis.market_value import MarketValueClient as _MVC, estimate_recruitment_cost_band
+        from aegis.pretrain import load_pretrained_market_value as _load_mv
+
+        _client = _MVC()
+        _bundle = _load_mv()
+        _rows = []
+        for _pos, _pos_label in [("GK", "Goalkeeper"), ("DEF", "Defender"),
+                                  ("MID", "Midfielder"), ("ATT", "Attacker")]:
+            _row = {"Position": _pos_label}
+            for _urg in ["Critical", "High", "Medium"]:
+                _lo, _hi = estimate_recruitment_cost_band(
+                    _pos, tc_data["league_id"], _urg, _bundle, _client)
+                _row[_urg] = f"£{_lo:.0f}–{_hi:.0f}M"
+            _rows.append(_row)
+
+        st.dataframe(pd.DataFrame(_rows), hide_index=True, use_container_width=True)
+    except Exception as exc:
+        st.error(f"Could not compute cost bands: {exc}")
+
+    st.caption(
+        "Figures are estimated from historical Transfermarkt transfer data "
+        "and league squad values — not a quote. See the Recruitment "
+        "Priorities table in Manager Fit Report / Compare Managers for "
+        "cost bands tied to an actual squad's position gaps."
+    )
 
     st.stop()
 
