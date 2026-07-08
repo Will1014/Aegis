@@ -1385,12 +1385,24 @@ if is_transfer_costs:
                         round(league_clubs["total_market_value"].median() * EUR_TO_GBP / 1_000_000, 1)
                         if len(league_clubs) else None
                     ),
+                    "median_value_eur_m": (
+                        round(league_clubs["total_market_value"].median() / 1_000_000, 1)
+                        if len(league_clubs) else None
+                    ),
                     "max_value_gbp_m": (
                         round(league_clubs["total_market_value"].max() * EUR_TO_GBP / 1_000_000, 1)
                         if len(league_clubs) else None
                     ),
+                    "max_value_eur_m": (
+                        round(league_clubs["total_market_value"].max() / 1_000_000, 1)
+                        if len(league_clubs) else None
+                    ),
                     "min_value_gbp_m": (
                         round(league_clubs["total_market_value"].min() * EUR_TO_GBP / 1_000_000, 1)
+                        if len(league_clubs) else None
+                    ),
+                    "min_value_eur_m": (
+                        round(league_clubs["total_market_value"].min() / 1_000_000, 1)
                         if len(league_clubs) else None
                     ),
                     "model_trained": bundle is not None,
@@ -1441,9 +1453,9 @@ if is_transfer_costs:
 
     if tc_data["median_value_gbp_m"] is not None:
         c1, c2, c3 = st.columns(3)
-        c1.markdown(metric_card(f"£{tc_data['min_value_gbp_m']:.0f}M", "Lowest Squad Value"), unsafe_allow_html=True)
-        c2.markdown(metric_card(f"£{tc_data['median_value_gbp_m']:.0f}M", "Median Squad Value", "orange"), unsafe_allow_html=True)
-        c3.markdown(metric_card(f"£{tc_data['max_value_gbp_m']:.0f}M", "Highest Squad Value"), unsafe_allow_html=True)
+        c1.markdown(metric_card(f"£{tc_data['min_value_gbp_m']:.0f}M (€{tc_data['min_value_eur_m']:.0f}M)", "Lowest Squad Value"), unsafe_allow_html=True)
+        c2.markdown(metric_card(f"£{tc_data['median_value_gbp_m']:.0f}M (€{tc_data['median_value_eur_m']:.0f}M)", "Median Squad Value", "orange"), unsafe_allow_html=True)
+        c3.markdown(metric_card(f"£{tc_data['max_value_gbp_m']:.0f}M (€{tc_data['max_value_eur_m']:.0f}M)", "Highest Squad Value"), unsafe_allow_html=True)
     else:
         st.caption("No club market-value data matched for this league.")
 
@@ -1455,7 +1467,9 @@ if is_transfer_costs:
     )
 
     try:
-        from aegis.market_value import MarketValueClient as _MVC, estimate_recruitment_cost_band
+        from aegis.market_value import (
+            MarketValueClient as _MVC, estimate_recruitment_cost_band, EUR_TO_GBP as _EUR_TO_GBP,
+        )
         from aegis.pretrain import load_pretrained_market_value as _load_mv
 
         _client = _MVC()
@@ -1467,7 +1481,12 @@ if is_transfer_costs:
             for _urg in ["Critical", "High", "Medium"]:
                 _lo, _hi = estimate_recruitment_cost_band(
                     _pos, tc_data["league_id"], _urg, _bundle, _client)
-                _row[_urg] = f"£{_lo:.0f}–{_hi:.0f}M"
+                # estimate_recruitment_cost_band returns £ only — reverse the
+                # same static rate to show € too, so this can be checked
+                # directly against Transfermarkt without doing the maths by hand.
+                _lo_eur = _lo / _EUR_TO_GBP
+                _hi_eur = _hi / _EUR_TO_GBP
+                _row[_urg] = f"£{_lo:.0f}–{_hi:.0f}M (€{_lo_eur:.0f}–{_hi_eur:.0f}M)"
             _rows.append(_row)
 
         st.dataframe(pd.DataFrame(_rows), hide_index=True, use_container_width=True)
@@ -1641,6 +1660,16 @@ if results_b is None and results_a is not None:
     compat    = r0.get("formation_compatibility", {})
     dual_data = r0.get("dual_ideal_xi")
     mgr_team  = r0.get("manager_prev_team", "")
+
+    if r0.get("manager_dna_source") == "fallback_club_profile":
+        st.warning(
+            f"⚠️ No tactical data found for **{mgr_name}** in the training pool "
+            f"(they weren't managing a licensed-league club in the selected season). "
+            f"The scores below reflect **{club_name}'s own current profile**, not "
+            f"{mgr_name}'s actual tactics — treat this as a placeholder, not a real "
+            f"fit assessment.",
+            icon="⚠️",
+        )
 
     # ── Page header ───────────────────────────────────────────────────────────
     compat_score = compat.get("score", 0)
@@ -2054,6 +2083,18 @@ elif results_b is not None:
     fit_b  = r_b.get("average_fit", 0)
     counts_a = r_a.get("classification_counts", {})
     counts_b = r_b.get("classification_counts", {})
+
+    _fallback_a = r_a.get("manager_dna_source") == "fallback_club_profile"
+    _fallback_b = r_b.get("manager_dna_source") == "fallback_club_profile"
+    if _fallback_a or _fallback_b:
+        _names = ", ".join(n for n, f in [(mgr_a, _fallback_a), (mgr_b, _fallback_b)] if f)
+        st.warning(
+            f"⚠️ No tactical data found for **{_names}** in the training pool "
+            f"(not managing a licensed-league club in the selected season). "
+            f"That scenario's scores reflect the club's own current profile, "
+            f"not the manager's actual tactics — treat it as a placeholder.",
+            icon="⚠️",
+        )
 
     # ── Page header ───────────────────────────────────────────────────────────
     st.markdown(
@@ -2482,14 +2523,27 @@ elif st.session_state.get("shortlist"):
 
     st.markdown(f"## Manager Shortlist — {_sl_club}")
 
+    _n_fallback = sum(1 for e in ranked if e.dna_source == "fallback_club_profile")
+    if _n_fallback:
+        st.warning(
+            f"⚠️ {_n_fallback} of {len(ranked)} manager(s) below have no tactical "
+            f"data in the training pool (they weren't managing a licensed-league "
+            f"club in the selected season). Their score reflects **{_sl_club}'s own "
+            f"current profile**, not their actual tactics — flagged with ⚠️ in the "
+            f"table below. Treat those rows as placeholders, not real fit scores.",
+            icon="⚠️",
+        )
+
     # ── Summary table ──────────────────────────────────────────────────────
     _rows = []
     for e in ranked:
         _lo = sum(float(r.get("cost_low",  0)) for r in (e.recruitment or []))
         _hi = sum(float(r.get("cost_high", 0)) for r in (e.recruitment or []))
+        _is_fallback = e.dna_source == "fallback_club_profile"
         _rows.append({
             "Rank":               e.rank,
-            "Manager":            e.manager,
+            "Manager":            f"⚠️ {e.manager}" if _is_fallback else e.manager,
+            "Data":               "⚠️ No match — using club profile" if _is_fallback else "✓ Matched",
             "Formation":          e.primary_formation,
             "Archetype":          e.archetype,
             "Avg Fit":            f"{e.average_fit:.1f}",

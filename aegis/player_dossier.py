@@ -565,7 +565,9 @@ class PlayerDossierGenerator:
         peer_group: List[Dict],
     ) -> Optional[Dict[str, Any]]:
         try:
-            from .market_value import MarketValueClient, estimate_recruitment_cost_band
+            from .market_value import (
+                MarketValueClient, estimate_recruitment_cost_band, EUR_TO_GBP,
+            )
             from .pretrain import load_pretrained_market_value
         except Exception:
             return None  # market_value module not available — no TMV, not an error
@@ -581,10 +583,11 @@ class PlayerDossierGenerator:
         # ── Tier 1: direct match ────────────────────────────────────────────
         match = client.match_player(name, dob, players_df)
         if match and match.get("market_value_in_eur"):
+            eur_m = match["market_value_in_eur"] / 1_000_000
             gbp_m = self._eur_to_gbp_m(match["market_value_in_eur"])
             conf = match.get("_match_confidence") or 0
             return {
-                "display": f"£{gbp_m:.1f}M",
+                "display": f"£{gbp_m:.1f}M (€{eur_m:.1f}M)",
                 "tier": "matched",
                 "tier_label": "Transfermarkt",
                 "confidence": conf,
@@ -593,7 +596,9 @@ class PlayerDossierGenerator:
                 "tooltip": (
                     f"Historical data: matched to Transfermarkt player "
                     f"\"{match.get('name', name)}\" ({conf:.0%} name/DOB match confidence). "
-                    f"This is Transfermarkt's own published market value, not an estimate."
+                    f"This is Transfermarkt's own published market value (€{eur_m:.1f}M), "
+                    f"converted to £ at a static rate — not an estimate. Compare the € "
+                    f"figure directly against transfermarkt.com to verify."
                 ),
             }
 
@@ -625,21 +630,22 @@ class PlayerDossierGenerator:
                 sims.append(weight)
             if weight_total > 0:
                 est_value_eur = weighted_sum / weight_total
+                eur_m = est_value_eur / 1_000_000
                 gbp_m = self._eur_to_gbp_m(est_value_eur)
                 avg_sim = sum(sims) / len(sims)
                 return {
-                    "display": f"£{gbp_m:.1f}M (est.)",
+                    "display": f"£{gbp_m:.1f}M (est., €{eur_m:.1f}M)",
                     "tier": "comparable",
                     "tier_label": f"{len(comparables)} comparables",
                     "confidence": round(min(avg_sim, 1.0), 2),
                     "flag_symbol": "◐",
                     "flag_class": "tmv-flag--comparable",
                     "tooltip": (
-                        f"No Transfermarkt match found for this player. Estimated from "
-                        f"{len(comparables)} players in the same league and position group "
-                        f"whose statistical profile is similar (avg similarity "
-                        f"{avg_sim:.0%}), weighted by how closely they match. "
-                        f"Not this player's own historical data."
+                        f"No Transfermarkt match found for this player. Estimated at "
+                        f"€{eur_m:.1f}M from {len(comparables)} players in the same "
+                        f"league and position group whose statistical profile is "
+                        f"similar (avg similarity {avg_sim:.0%}), weighted by how "
+                        f"closely they match. Not this player's own historical data."
                     ),
                 }
 
@@ -656,8 +662,9 @@ class PlayerDossierGenerator:
         if cost_low <= 0 and cost_high <= 0:
             return None
         midpoint = (cost_low + cost_high) / 2
+        midpoint_eur = midpoint / EUR_TO_GBP  # reverse the conversion for display consistency
         return {
-            "display": f"£{midpoint:.1f}M (model est.)",
+            "display": f"£{midpoint:.1f}M (model est., €{midpoint_eur:.1f}M)",
             "tier": "model",
             "tier_label": "model baseline — no comparables",
             "confidence": None,
@@ -1254,7 +1261,7 @@ body {{
   color: var(--white);
   line-height: 1;
 }}
-.s-value.gold {{ color: var(--gold); font-size: 24px; }}
+.s-value.gold {{ color: var(--gold); font-size: 18px; white-space: normal; line-height: 1.2; }}
 
 /* ── STAT CARDS ─────────────────────────────────────────────── */
 .stat-grid {{
