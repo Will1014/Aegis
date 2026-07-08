@@ -979,6 +979,20 @@ def _run_single_statsbomb_analysis(
     for p in analyzer.squad_fit:
         position_groups[p.position_group].append(p)
     
+    # Load the pretrained recruitment-cost model once per call rather than
+    # per position group. Falls back to the static cost_map inside
+    # estimate_recruitment_cost_band() itself if no pretrained bundle exists
+    # yet (first deploy, or the nightly market-value training step failed
+    # non-fatally) — see aegis/market_value.py and aegis/pretrain.py.
+    try:
+        from aegis.pretrain import load_pretrained_market_value
+        from aegis.market_value import estimate_recruitment_cost_band
+        _mv_bundle = load_pretrained_market_value()
+    except Exception as _mv_e:
+        print(f"  ℹ Market value model unavailable — using static cost estimates: {_mv_e}")
+        _mv_bundle = None
+        estimate_recruitment_cost_band = None
+
     recruitment = []
     for pos_group, players in position_groups.items():
         if not players:
@@ -986,9 +1000,14 @@ def _run_single_statsbomb_analysis(
         avg_fit = sum(p.fit_score for p in players) / len(players)
         if avg_fit < 60:
             gap = 75 - avg_fit
-            cost_map = {"GK": (15, 35), "DEF": (25, 55), "MID": (30, 65), "ATT": (35, 75)}
-            cost_low, cost_high = cost_map.get(pos_group, (20, 50))
             urgency = "Critical" if avg_fit < 45 else "High" if avg_fit < 55 else "Medium"
+            if estimate_recruitment_cost_band is not None:
+                cost_low, cost_high = estimate_recruitment_cost_band(
+                    pos_group, primary_league_id, urgency, _mv_bundle,
+                )
+            else:
+                cost_map = {"GK": (15, 35), "DEF": (25, 55), "MID": (30, 65), "ATT": (35, 75)}
+                cost_low, cost_high = cost_map.get(pos_group, (20, 50))
             timeline = "January" if urgency == "Critical" else "Summer"
             recruitment.append({
                 "position": pos_group, "gap": round(gap, 1),

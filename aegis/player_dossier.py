@@ -91,9 +91,6 @@ _POSITION_GROUPS: Dict[str, List[int]] = {
     "Attacker":    [17, 18, 19, 20, 21, 22, 23, 24, 25],
 }
 
-# Broad position group filter options, in display order (used by UI filters)
-POSITION_GROUP_OPTIONS: List[str] = ["Goalkeeper", "Defender", "Midfielder", "Attacker"]
-
 # Human-readable position labels
 _POSITION_LABELS: Dict[int, str] = {
     1: "GK", 2: "RB", 3: "RCB", 4: "CB", 5: "LCB", 6: "LB",
@@ -277,53 +274,16 @@ class PlayerDossierGenerator:
 
         return None
 
-    def list_players(
-        self,
-        min_minutes: int = MIN_MINUTES,
-        position_group: Optional[str] = None,
-    ) -> List[str]:
-        """
-        Return sorted list of player names meeting minimum minutes.
-
-        Args:
-            min_minutes: Minimum season minutes to be included.
-            position_group: Optional filter — one of "Goalkeeper", "Defender",
-                "Midfielder", "Attacker" (see POSITION_GROUP_OPTIONS). If None,
-                players from all positions are returned.
-        """
+    def list_players(self, min_minutes: int = MIN_MINUTES) -> List[str]:
+        """Return sorted list of player names meeting minimum minutes."""
         names = []
         for r in self.raw_stats:
             mins = _safe_float(_get(r, "minutes"), 0)
-            if mins < min_minutes:
-                continue
-            if position_group and self._position_group(r) != position_group:
-                continue
-            n = _get(r, "player_name") or ""
-            if n:
-                names.append(n)
+            if mins >= min_minutes:
+                n = _get(r, "player_name") or ""
+                if n:
+                    names.append(n)
         return sorted(set(names))
-
-    def list_players_with_positions(
-        self, min_minutes: int = MIN_MINUTES
-    ) -> List[Tuple[str, str]]:
-        """
-        Return sorted list of (player_name, position_group) tuples meeting
-        minimum minutes. Useful for building a position filter in a UI
-        without needing to re-fetch or re-scan raw_stats when the filter
-        changes.
-        """
-        pairs = []
-        seen = set()
-        for r in self.raw_stats:
-            mins = _safe_float(_get(r, "minutes"), 0)
-            if mins < min_minutes:
-                continue
-            n = _get(r, "player_name") or ""
-            if not n or n in seen:
-                continue
-            seen.add(n)
-            pairs.append((n, self._position_group(r)))
-        return sorted(pairs, key=lambda p: p[0])
 
     def generate(
         self,
@@ -355,7 +315,17 @@ class PlayerDossierGenerator:
         percentiles = self._compute_percentiles(metrics, peer_group)
         scout_ratings = self._compute_scout_ratings(percentiles)
 
-        player_data = self._build_player_data(record, metrics, percentiles, scout_ratings, overrides)
+        # Market value: never let this break dossier generation — it's an
+        # enhancement, not a requirement. Any failure (network, missing
+        # market_value module, bad match data) falls back to no TMV shown,
+        # same as today's behaviour when no manual override is given.
+        try:
+            tmv_info = self._estimate_tmv(record, metrics, percentiles, peer_group)
+        except Exception as e:
+            print(f"  ℹ TMV estimation skipped: {e}")
+            tmv_info = None
+
+        player_data = self._build_player_data(record, metrics, percentiles, scout_ratings, overrides, tmv_info)
 
         html = self._render_html(player_data, competition_name, season_name)
 
@@ -454,6 +424,151 @@ class PlayerDossierGenerator:
 
         return percentiles
 
+    # -------------------------------------------------------------------------
+    # MARKET VALUE (TMV)
+    # -------------------------------------------------------------------------
+    #
+    # Three-tier resolution, each tier weaker/less confident than the last:
+    #   1. MATCHED     — direct StatsBomb -> Transfermarkt join on name + DOB.
+    #                    Real market value, highest confidence.
+    #   2. COMPARABLE  — no direct match found (younger/lower-profile player,
+    #                    or just missing from Transfermarkt's coverage). Take
+    #                    every player in the same league + position group who
+    #                    DID get matched, weight them by how statistically
+    #                    similar their percentile profile is to this player's,
+    #                    and use the similarity-weighted average of their
+    #                    market values. This is the "same league, same role,
+    #                    similar stats" estimate.
+    #   3. MODEL       — fewer than MIN_COMPARABLES matched peers exist in this
+    #                    league/position (small leagues, thin TM coverage).
+    #                    Falls back to the age/position/league-tier-only
+    #                    recruitment-cost model — no stats signal, weakest tier.
+    #
+    # Every tier is labelled explicitly in the UI (see _render_bio_rows) —
+    # never shown as an unqualified number, so nobody mistakes a model
+    # estimate for a real valuation.
+
+    MIN_COMPARABLES = 5  # below this, comparables are too thin to trust
+
+    def _estimate_tmv(
+        self,
+        record: Dict,
+        metrics: Dict[str, float],
+        percentiles: Dict[str, int],
+        peer_group: List[Dict],
+    ) -> Optional[Dict[str, Any]]:
+        try:
+            from .market_value import MarketValueClient, estimate_recruitment_cost_band
+            from .pretrain import load_pretrained_market_value
+        except Exception:
+            return None  # market_value module not available — no TMV, not an error
+
+        name = _get(record, "player_name") or ""
+        dob = _get(record, "birth_date")
+        if not name:
+            return None
+
+        client = MarketValueClient()
+        players_df = client.get_players()
+
+        # ── Tier 1: direct match ────────────────────────────────────────────
+        match = client.match_player(name, dob, players_df)
+        if match and match.get("market_value_in_eur"):
+            gbp_m = self._eur_to_gbp_m(match["market_value_in_eur"])
+            conf = match.get("_match_confidence") or 0
+            return {
+                "display": f"£{gbp_m:.1f}M",
+                "tier": "matched",
+                "tier_label": "Transfermarkt",
+                "confidence": conf,
+                "flag_symbol": "●",
+                "flag_class": "tmv-flag--matched",
+                "tooltip": (
+                    f"Historical data: matched to Transfermarkt player "
+                    f"\"{match.get('name', name)}\" ({conf:.0%} name/DOB match confidence). "
+                    f"This is Transfermarkt's own published market value, not an estimate."
+                ),
+            }
+
+        # ── Tier 2: comparables — same league + position, weighted by stat similarity ──
+        comparables = []  # (percentile_vector, market_value_eur)
+        for peer in peer_group:
+            if peer is record:
+                continue
+            peer_name = _get(peer, "player_name") or ""
+            peer_dob = _get(peer, "birth_date")
+            if not peer_name:
+                continue
+            peer_match = client.match_player(peer_name, peer_dob, players_df)
+            if not peer_match or not peer_match.get("market_value_in_eur"):
+                continue
+            peer_metrics = self._compute_metrics(peer)
+            peer_percentiles = self._compute_percentiles(peer_metrics, peer_group)
+            comparables.append((peer_percentiles, peer_match["market_value_in_eur"]))
+
+        if len(comparables) >= self.MIN_COMPARABLES:
+            keys = [k for k, *_ in DOSSIER_METRICS]
+            weighted_sum, weight_total, sims = 0.0, 0.0, []
+            for peer_pct, peer_value in comparables:
+                dist_sq = sum((percentiles.get(k, 50) - peer_pct.get(k, 50)) ** 2 for k in keys)
+                dist = math.sqrt(dist_sq)
+                weight = 1.0 / (1.0 + dist / 20.0)  # 20-point percentile scale for gentle falloff
+                weighted_sum += weight * peer_value
+                weight_total += weight
+                sims.append(weight)
+            if weight_total > 0:
+                est_value_eur = weighted_sum / weight_total
+                gbp_m = self._eur_to_gbp_m(est_value_eur)
+                avg_sim = sum(sims) / len(sims)
+                return {
+                    "display": f"£{gbp_m:.1f}M (est.)",
+                    "tier": "comparable",
+                    "tier_label": f"{len(comparables)} comparables",
+                    "confidence": round(min(avg_sim, 1.0), 2),
+                    "flag_symbol": "◐",
+                    "flag_class": "tmv-flag--comparable",
+                    "tooltip": (
+                        f"No Transfermarkt match found for this player. Estimated from "
+                        f"{len(comparables)} players in the same league and position group "
+                        f"whose statistical profile is similar (avg similarity "
+                        f"{avg_sim:.0%}), weighted by how closely they match. "
+                        f"Not this player's own historical data."
+                    ),
+                }
+
+        # ── Tier 3: model baseline — age/position/league-tier only ─────────
+        bundle = load_pretrained_market_value()
+        if bundle is None:
+            return None  # nothing to show — better than a silent bad guess
+
+        pos_group_map = {"Goalkeeper": "GK", "Defender": "DEF", "Midfielder": "MID", "Attacker": "ATT"}
+        pos_group = pos_group_map.get(self._position_group(record), "MID")
+        cost_low, cost_high = estimate_recruitment_cost_band(
+            pos_group, None, "Medium", bundle,
+        )
+        if cost_low <= 0 and cost_high <= 0:
+            return None
+        midpoint = (cost_low + cost_high) / 2
+        return {
+            "display": f"£{midpoint:.1f}M (model est.)",
+            "tier": "model",
+            "tier_label": "model baseline — no comparables",
+            "confidence": None,
+            "flag_symbol": "○",
+            "flag_class": "tmv-flag--model",
+            "tooltip": (
+                "No Transfermarkt match and fewer than "
+                f"{self.MIN_COMPARABLES} statistically similar players could be matched "
+                "in this league/position. Estimated from age, position and league tier "
+                "only — no performance data or comparable players used. Lowest-confidence tier."
+            ),
+        }
+
+    @staticmethod
+    def _eur_to_gbp_m(value_eur: float) -> float:
+        from .market_value import EUR_TO_GBP
+        return value_eur * EUR_TO_GBP / 1_000_000
+
     def _compute_scout_ratings(self, percentiles: Dict[str, int]) -> Dict[str, float]:
         """Convert percentile averages to 1–10 scout rating scale."""
         ratings: Dict[str, float] = {}
@@ -476,6 +591,7 @@ class PlayerDossierGenerator:
         percentiles: Dict[str, int],
         scout_ratings: Dict[str, float],
         overrides: Dict,
+        tmv_info: Optional[Dict[str, Any]] = None,
     ) -> Dict:
         name = overrides.get("player_name") or _get(record, "player_name") or "Unknown Player"
         team = overrides.get("team_name") or _get(record, "team_name") or "Unknown Club"
@@ -521,7 +637,12 @@ class PlayerDossierGenerator:
             "height":         overrides.get("height") or api_height_str,
             "strong_foot":    overrides.get("strong_foot") or api_foot,
             "contract_exp":   overrides.get("contract_exp", ""),
-            "tmv":            overrides.get("tmv", ""),
+            "tmv":            overrides.get("tmv") or (tmv_info["display"] if tmv_info else ""),
+            "tmv_tier":       "manual" if overrides.get("tmv") else (tmv_info["tier"] if tmv_info else None),
+            "tmv_source":     tmv_info["tier_label"] if tmv_info and not overrides.get("tmv") else None,
+            "tmv_flag_symbol": None if overrides.get("tmv") else (tmv_info["flag_symbol"] if tmv_info else None),
+            "tmv_flag_class": None if overrides.get("tmv") else (tmv_info["flag_class"] if tmv_info else None),
+            "tmv_tooltip":    None if overrides.get("tmv") else (tmv_info["tooltip"] if tmv_info else None),
             "positions":      overrides.get("positions", [position_group[:2].upper()]),
             "minutes":        int(mins),
             "matches":        matches,
@@ -882,6 +1003,16 @@ body {{
 .bio-row-key {{ color: var(--muted); }}
 .bio-row-val {{ color: var(--white); font-weight: 600; font-size: 12px; }}
 .bio-row-val.gold {{ color: var(--gold); }}
+.tmv-flag {{
+  display: inline-block;
+  margin-left: 6px;
+  font-size: 10px;
+  cursor: help;
+  font-weight: 400;
+}}
+.tmv-flag--matched    {{ color: #34d399; }}  /* green — real historical data */
+.tmv-flag--comparable {{ color: #f59e0b; }}  /* amber — estimated from similar players */
+.tmv-flag--model      {{ color: #6b7280; }}  /* grey — weakest, no comparables */
 
 /* Scout star ratings */
 .scout-ratings {{ display: flex; flex-direction: column; gap: 12px; }}
@@ -1209,10 +1340,17 @@ canvas#radarChart {{
         html = ""
         for label, value in rows:
             gold = "gold" if label == "TMV" else ""
+            flag_html = ""
+            if label == "TMV" and d.get("tmv_flag_symbol"):
+                tooltip = (d.get("tmv_tooltip") or "").replace('"', "&quot;")
+                flag_html = (
+                    f'<span class="tmv-flag {d.get("tmv_flag_class", "")}" '
+                    f'title="{tooltip}">{d["tmv_flag_symbol"]}</span>'
+                )
             html += (
                 f'<div class="bio-row">'
                 f'<span class="bio-row-key">{label}</span>'
-                f'<span class="bio-row-val {gold}">{value}</span>'
+                f'<span class="bio-row-val {gold}">{value}{flag_html}</span>'
                 f'</div>'
             )
         return html

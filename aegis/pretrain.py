@@ -8,19 +8,18 @@ The master model gives K-means the richest possible population to cluster agains
 Squad-specific analysis (ETL, fit scoring) still uses the user's selected league
 and season — only the clustering context is global.
 
-After the master model saves, this also runs train_position_demands.py's
-derivation step (position-specific pillar demand weights, empirically
-estimated from the same training population - see that file's docstring
-for details). That step is non-fatal: if it errors, the master pillar
-model above is still valid and this job still counts as a successful run.
-No separate GitHub Actions step is needed for it - one `python -m
-aegis.pretrain` call does both.
+Also trains the recruitment-cost market-value model (aegis/market_value.py)
+on transfermarkt-datasets and saves it to pretrained/market_value/. This is a
+separate, non-fatal step — if it fails, the DNA model training still succeeds
+and recruitment costs just fall back to static estimates until the next run.
 
 Usage:
-    python -m aegis.pretrain         # train master model + derive demand weights
+    python -m aegis.pretrain         # train master model
     python -m aegis.pretrain --dry-run  # check connectivity without training
 
 Scheduled via .github/workflows/pretrain.yml — runs daily at 5am UTC.
+No workflow changes needed for the market-value step — it runs inside this
+same script.
 """
 
 from __future__ import annotations
@@ -39,10 +38,11 @@ from typing import List, Optional
 ALL_LEAGUES = [2, 3, 4, 5, 6]   # PL, Championship, L1, L2, Eredivisie
 ALL_SEASONS = [235, 281, 317, 318]  # 2022/23, 2023/24, 2024/25, 2025/26
 
-REPO_ROOT      = Path(__file__).resolve().parent.parent
-PRETRAINED_DIR = REPO_ROOT / "pretrained"
-MASTER_DIR     = PRETRAINED_DIR / "master"
-MANIFEST_PATH  = PRETRAINED_DIR / "manifest.json"
+REPO_ROOT        = Path(__file__).resolve().parent.parent
+PRETRAINED_DIR   = REPO_ROOT / "pretrained"
+MASTER_DIR       = PRETRAINED_DIR / "master"
+MARKET_VALUE_DIR = PRETRAINED_DIR / "market_value"
+MANIFEST_PATH    = PRETRAINED_DIR / "manifest.json"
 
 REQUIRED_FILES = [
     "manager_dna_model.pkl",
@@ -158,33 +158,22 @@ def train_master(base_dir: str, verbose: bool = True) -> bool:
         (MASTER_DIR / "meta.json").write_text(json.dumps(meta, indent=2))
         print(f"\n  ✓ Master model saved to pretrained/master/")
 
-        # ── Derive position-specific pillar demand weights ─────────────────
-        # Runs against the manager_profiles.csv just written above - reads
-        # its own pillar_pct_* + team_id/season_id columns, fetches
-        # player_season_stats for the same team-seasons, and regresses
-        # player features against team pillar scores (shrunk toward the
-        # hand-authored PILLAR_PLAYER_DEMANDS table). Writes
-        # pretrained/master/pillar_player_demands.json, which analysis.py
-        # picks up automatically at runtime if present - no code change
-        # needed beyond this file to get the improved weights live.
-        #
-        # Deliberately non-fatal: this step is an enhancement on top of the
-        # core pillar model, not a dependency of it. If it errors (network
-        # blip, a season temporarily unavailable, etc.) the master model
-        # trained above is still valid and should still be treated as a
-        # successful pretrain run - the existing hand-authored demand table
-        # remains in effect as the fallback either way.
+        # ── Market-value / recruitment-cost model (non-fatal) ──────────────
+        # Trained on transfermarkt-datasets (github.com/dcaribou/transfermarkt-datasets),
+        # a separate public data source from StatsBomb — failure here should
+        # never fail the whole pretrain run, same as any other optional step.
         try:
-            from aegis.train_position_demands import run as run_position_demands
-            ok = run_position_demands(verbose=verbose)
-            if not ok:
-                print("  ⚠ Position demand derivation did not complete - "
-                      "hand-authored PILLAR_PLAYER_DEMANDS remains in effect. "
-                      "Master pillar model above is unaffected.")
+            print("\n  Training market-rate model (transfermarkt-datasets)...")
+            from aegis.market_value import (
+                MarketValueClient, train_market_value_model, save_pretrained_market_model,
+            )
+            mv_model, mv_meta = train_market_value_model(MarketValueClient())
+            save_pretrained_market_model(mv_model, mv_meta, MARKET_VALUE_DIR)
+            print(f"  ✓ Market value model saved to pretrained/market_value/ "
+                  f"(MAE €{mv_meta['mae_eur']:,}, n_train={mv_meta['n_train']})")
         except Exception as e:
-            print(f"  ⚠ Position demand derivation failed - skipping: {e}")
-            print("  Hand-authored PILLAR_PLAYER_DEMANDS remains in effect. "
-                  "Master pillar model above is unaffected.")
+            print(f"  ⚠ Market value training failed — skipping (recruitment costs "
+                  f"will fall back to static estimates): {e}")
 
         return True
 
@@ -199,9 +188,16 @@ def update_manifest():
         models = [json.loads(meta_path.read_text())]
     else:
         models = []
+
+    mv_meta_path = MARKET_VALUE_DIR / "metadata.json"
+    market_value_status = (
+        json.loads(mv_meta_path.read_text()) if mv_meta_path.exists() else None
+    )
+
     manifest = {
         "updated_at": datetime.now(timezone.utc).isoformat(),
         "models":     models,
+        "market_value_model": market_value_status,
     }
     MANIFEST_PATH.write_text(json.dumps(manifest, indent=2))
     print(f"✓ Manifest updated")
@@ -213,27 +209,16 @@ def update_manifest():
 
 def load_pretrained(base_dir: str) -> dict | None:
     """
-    Copy the master pre-trained bundle into Config.PROCESSED_DIR/"training/".
+    Copy the master pre-trained bundle into {base_dir}/data/processed/training/.
     Returns metadata dict on success, None if the bundle doesn't exist yet.
     Called by streamlit_app.py immediately after login.
-
-    IMPORTANT: the copy target is derived from Config.PROCESSED_DIR (after
-    Config.set_base_dir(base_dir)) rather than hand-built from base_dir
-    directly. Previously this was `Path(base_dir) / "data" / "processed" /
-    "training"`, which silently diverged from Config.PROCESSED_DIR = 
-    BASE_DIR / "processed" (no "data" segment) - the copy succeeded and
-    reported success, but wrote one directory level away from where
-    SquadFitAnalyzer's default training_dir actually looks, so load_model()
-    still raised "Model not found" despite load_pretrained() returning a
-    success dict. Deriving both from the same Config attribute makes that
-    class of mismatch structurally impossible going forward.
     """
     if not all((MASTER_DIR / f).exists() for f in REQUIRED_FILES):
         return None
 
     from aegis import Config
     Config.set_base_dir(base_dir)
-    target = Config.PROCESSED_DIR / "training"
+    target = Path(base_dir) / "data" / "processed" / "training"
     target.mkdir(parents=True, exist_ok=True)
 
     for fname in REQUIRED_FILES:
@@ -251,6 +236,18 @@ def master_meta() -> dict | None:
     if meta_path.exists():
         return json.loads(meta_path.read_text())
     return None
+
+
+def load_pretrained_market_value():
+    """
+    Return (model, metadata) for the recruitment-cost market-value model,
+    or None if it hasn't been trained yet (first deploy, or a nightly run
+    failed non-fatally). Callers should treat None as "use the static
+    fallback cost_map" rather than erroring — see market_value.py's
+    estimate_recruitment_cost_band(), which already does this.
+    """
+    from aegis.market_value import load_pretrained_market_model
+    return load_pretrained_market_model(MARKET_VALUE_DIR)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
