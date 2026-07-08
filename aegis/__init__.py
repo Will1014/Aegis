@@ -799,6 +799,7 @@ def run_full_analysis_statsbomb(
                 visualize=visualize,
                 output_file=output_file if not is_batch else None,
                 coach_name_override=current_coach,
+                competition_id=primary_league_id,
             )
             
             if result:
@@ -874,6 +875,7 @@ def _run_single_statsbomb_analysis(
     visualize: bool = True,
     output_file: str = None,
     coach_name_override: str = None,
+    competition_id: int = None,
 ) -> dict:
     """
     Run squad-fit analysis + dashboard for a single (team, coach) combo.
@@ -881,6 +883,11 @@ def _run_single_statsbomb_analysis(
     This is the inner workhorse called by run_full_analysis_statsbomb
     for each combination.  The model is already trained and data already
     fetched — this handles Steps 4 & 5 only.
+
+    competition_id: StatsBomb competition ID for the club being analysed —
+    used to map to a Transfermarkt league tier when estimating recruitment
+    costs (see aegis/market_value.py LEAGUE_CODE_MAP). None falls back to
+    a global median across all clubs rather than a league-specific one.
     """
     import json
     import csv as _csv
@@ -895,12 +902,17 @@ def _run_single_statsbomb_analysis(
     try:
         analyzer.set_target_manager(manager_name)
     except ValueError:
-        # Manager not in training data — fall back to ETL DNA (target team's profile)
+        # Manager not in training data — fall back to ETL DNA (target team's profile).
+        # This is a real limitation, not a detail to bury: it means the score
+        # you're about to see reflects the CLUB's own profile, not this
+        # manager's actual tactics. Tag it so callers (Single/Compare/
+        # Shortlist UI) can warn rather than silently present it as normal.
         print(f"  ⚠ '{manager_name}' not in training data, using target team's profile")
         dna_copy = dict(manager_dna)
         if coach_name_override:
             dna_copy["manager"] = coach_name_override
         analyzer.set_target_manager_from_dna(dna_copy)
+        analyzer.manager_dna_source = "fallback_club_profile"
     # ── Formation: compute club shape + manager historical shape ──────────
     import os as _os
     _formation_data      = None
@@ -1003,7 +1015,7 @@ def _run_single_statsbomb_analysis(
             urgency = "Critical" if avg_fit < 45 else "High" if avg_fit < 55 else "Medium"
             if estimate_recruitment_cost_band is not None:
                 cost_low, cost_high = estimate_recruitment_cost_band(
-                    pos_group, primary_league_id, urgency, _mv_bundle,
+                    pos_group, competition_id, urgency, _mv_bundle,
                 )
             else:
                 cost_map = {"GK": (15, 35), "DEF": (25, 55), "MID": (30, 65), "ATT": (35, 75)}
@@ -1149,6 +1161,11 @@ def _run_single_statsbomb_analysis(
         "classification_counts": classification_counts,
         "squad_profiles": squad_profiles,
         "manager_dna": manager_dna,
+        "manager_dna_source": getattr(analyzer, "manager_dna_source", "unknown"),
+        "dna_dimensions": dna_dimensions,
+        "recruitment": recruitment,
+        "ideal_xi": analyzer.ideal_xi,
+        "primary_formation": legacy_results.get("primary_formation", "4-3-3"),
     }
     
     print(f"  ✓ {results['manager']} → {results['club']}: "
