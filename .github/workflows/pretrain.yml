@@ -5,7 +5,6 @@ on:
   schedule:
     # 5am UTC every day — models are fresh when the working day begins
     - cron: "0 5 * * *"
-
   # Manual trigger from the GitHub Actions UI (useful for first run / debugging)
   workflow_dispatch:
     inputs:
@@ -30,11 +29,13 @@ jobs:
     timeout-minutes: 120   # training all 6 combinations can take ~90 min
 
     steps:
-      # 1. Checkout repo (with full history so we can push back)
+      # 1. Checkout repo (full history — needed to rebase cleanly before push,
+      #    since this job can run for ~90 min and main will likely have moved
+      #    on by the time we're ready to commit)
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 1
+          fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
       # 2. Python setup
@@ -71,15 +72,42 @@ jobs:
           fi
 
       # 6. Commit and push updated model files
+      #
+      # Training can take up to ~90 minutes, so by the time we're ready to
+      # push, main has often moved on — any commit made while this job was
+      # running gets rejected by a bare `git push` (non-fast-forward). Rebase
+      # onto the latest main immediately before pushing, and retry a few
+      # times in case another push lands in the small gap between fetch and
+      # push. pretrained/ is only ever written by this job, so a conflict
+      # here would mean something unexpected touched those files — fail
+      # loudly rather than force-push over it.
       - name: Commit updated models
         run: |
           git config user.name  "Aegis Training Bot"
           git config user.email "bot@aegis-mtfi.ai"
           git add pretrained/
-          # Only commit if there are changes
+
           if git diff --staged --quiet; then
             echo "No model changes to commit."
-          else
-            git commit -m "chore: update pre-trained models [$(date -u '+%Y-%m-%d %H:%M UTC')]"
-            git push
+            exit 0
           fi
+
+          git commit -m "chore: update pre-trained models [$(date -u '+%Y-%m-%d %H:%M UTC')]"
+
+          n=0
+          max_attempts=5
+          until [ "$n" -ge "$max_attempts" ]
+          do
+            git fetch origin main
+            if git rebase origin/main && git push origin HEAD:main; then
+              echo "Push succeeded."
+              exit 0
+            fi
+            n=$((n + 1))
+            echo "Push attempt $n/$max_attempts failed (main moved again) — retrying in 10s..."
+            git rebase --abort 2>/dev/null || true
+            sleep 10
+          done
+
+          echo "::error::Could not push pre-trained models after $max_attempts attempts."
+          exit 1
