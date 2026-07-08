@@ -741,7 +741,7 @@ for key, default in [
     ("squad_a", None), ("squad_b", None),
     ("authenticated", False),
     ("dossier_html", None), ("dossier_player", ""),
-    ("dossier_player_list", []), ("dossier_player_records", []), ("d_league_last", ""),
+    ("dossier_player_list", []), ("d_league_last", ""),
     ("shortlist", None), ("shortlist_club", None),
     ("report_sections", None),
     # Squad filter keys — must exist before any tab renders to prevent tab jump
@@ -1109,18 +1109,10 @@ with st.sidebar:
         # Reset player list if league changes
         if st.session_state.get("d_league_last") != d_league:
             st.session_state.dossier_player_list = []
-            st.session_state.dossier_player_records = []
             st.session_state["d_league_last"] = d_league
 
-        # Position filter — applied client-side against the cached player
-        # list, so switching it doesn't require re-loading from the API
-        from aegis.player_dossier import POSITION_GROUP_OPTIONS
-        d_position = st.selectbox(
-            "Position", ["All"] + POSITION_GROUP_OPTIONS, key="d_position",
-            help="Filter the player list below by broad position group.")
-
         # Load player list for selected league/season
-        player_records = st.session_state.dossier_player_records
+        player_list = st.session_state.dossier_player_list
         if has_creds and st.button("🔍  Load Players", key="d_load",
                                    use_container_width=True):
             with st.spinner("Loading player list…"):
@@ -1133,32 +1125,24 @@ with st.sidebar:
                     sb = StatsBombClient()
                     _stats = sb.get_player_season_stats(d_league_id, season_id)
                     gen = PlayerDossierGenerator(_stats)
-                    player_records = gen.list_players_with_positions(min_minutes=MIN_MINUTES)
-                    st.session_state.dossier_player_records = player_records
-                    st.session_state.dossier_player_list = [n for n, _ in player_records]
-                    st.success(f"✓ {len(player_records)} players loaded")
+                    player_list = gen.list_players(min_minutes=MIN_MINUTES)
+                    st.session_state.dossier_player_list = player_list
+                    st.success(f"✓ {len(player_list)} players loaded")
                 except Exception as exc:
                     st.error(f"Could not load players: {exc}")
 
-        # Apply position filter to the cached list
-        if d_position != "All":
-            player_list = [n for n, pos in player_records if pos == d_position]
-        else:
-            player_list = [n for n, _ in player_records]
-
         if player_list:
             d_player = st.selectbox("Player", player_list, key="d_player_select")
-        elif player_records:
-            st.caption(f"No players found for position: {d_position}")
-            d_player = st.text_input("Player name", key="d_player_text",
-                                     placeholder="e.g. Tae-Seok Lee")
         else:
             d_player = st.text_input("Player name", key="d_player_text",
                                      placeholder="e.g. Tae-Seok Lee")
 
         # Optional enrichment — only fields not auto-populated from StatsBomb
-        with st.expander("📝  Add transfer info (optional)"):
-            d_tmv      = st.text_input("Transfer market value", placeholder="e.g. €1.5M", key="d_tmv")
+        # or the market-value model. TMV is no longer here — it's estimated
+        # automatically (Transfermarkt match → comparables → model baseline,
+        # see player_dossier.py._estimate_tmv) and shown with a tier flag
+        # in the dossier itself.
+        with st.expander("📝  Add contract info (optional)"):
             d_contract = st.text_input("Contract expiry", placeholder="e.g. Jun 2029", key="d_contract")
 
         dossier_clicked = st.button("⚽  Generate Dossier", use_container_width=True,
@@ -1269,11 +1253,10 @@ if is_dossier:
                 sb = StatsBombClient()
                 _stats = sb.get_player_season_stats(_d_league_id, season_id)
 
-                # Build overrides — TMV and contract only (height/foot auto from API)
+                # Build overrides — contract only now (TMV is auto-estimated
+                # by PlayerDossierGenerator._estimate_tmv; height/foot auto from API)
                 _overrides = {}
-                _d_t = st.session_state.get("d_tmv", "")
                 _d_c = st.session_state.get("d_contract", "")
-                if _d_t: _overrides["tmv"] = _d_t
                 if _d_c: _overrides["contract_exp"] = _d_c
 
                 # Competition display name
