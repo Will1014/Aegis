@@ -47,6 +47,7 @@ import io
 import json
 import time
 import pickle
+import requests
 from pathlib import Path
 from datetime import date, datetime
 from difflib import SequenceMatcher
@@ -124,6 +125,30 @@ class MarketValueClient:
     def _cache_path(self, table: str) -> Path:
         return Config.CACHE_DIR / f"tm_{table}.parquet"
 
+    @staticmethod
+    def _fetch_csv_gz(url: str) -> pd.DataFrame:
+        """
+        Fetch a gzipped CSV over HTTP with a browser-like User-Agent.
+
+        pandas.read_csv(url) opens the URL with Python's default urllib
+        opener, which sends a generic "Python-urllib/3.x" User-Agent —
+        Cloudflare (fronting this R2 bucket) blocks that as a bot request
+        with a 403, even though the bucket itself is public and needs no
+        credentials. Fetching with requests and a real User-Agent avoids
+        that block; the response bytes are then handed to pandas exactly
+        as before.
+        """
+        headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+            ),
+            "Accept": "*/*",
+        }
+        resp = requests.get(url, headers=headers, timeout=30)
+        resp.raise_for_status()
+        return pd.read_csv(io.BytesIO(resp.content), compression="gzip", low_memory=False)
+
     def get_table(self, table: str, use_cache: bool = True) -> pd.DataFrame:
         """
         Fetch a transfermarkt-datasets table, with local parquet caching.
@@ -143,7 +168,7 @@ class MarketValueClient:
                 return pd.read_parquet(cache_file)
 
         try:
-            df = pd.read_csv(DATA_URLS[table], compression="gzip", low_memory=False)
+            df = self._fetch_csv_gz(DATA_URLS[table])
             cache_file.parent.mkdir(parents=True, exist_ok=True)
             df.to_parquet(cache_file, index=False)
             return df
