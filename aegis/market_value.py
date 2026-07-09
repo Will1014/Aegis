@@ -472,23 +472,31 @@ def train_market_value_model(
     # sliding_window_view(distinct_values, 2) for each feature — which
     # raises exactly "window shape cannot be larger than input array
     # shape" if a column has fewer than 2 distinct values. This happens
-    # when a feature is constant across the whole training set — most
-    # likely buying_club_tier/selling_club_tier/international_caps after
-    # missing values get filled with the same median, collapsing what
-    # variance existed. Every synthetic reproduction attempt this session
-    # used a sklearn version/build with a different (percentile-based)
-    # implementation that doesn't have this failure mode at all, which is
-    # exactly why none of them reproduced it. Fix the actual condition
-    # instead of chasing sklearn versions: nudge any degenerate column
-    # with deterministic, negligible noise so it always has >=2 distinct
-    # values, regardless of which sklearn implementation ends up running.
+    # when a feature is constant (or entirely NaN — e.g. a club_id join
+    # that failed for this training subset, most likely
+    # buying_club_tier/selling_club_tier) across the whole training set.
+    # Every synthetic reproduction attempt this session used a sklearn
+    # version/build with a different (percentile-based) implementation
+    # that doesn't have this failure mode at all, which is exactly why
+    # none of them reproduced it.
+    #
+    # IMPORTANT: an earlier version of this guard ADDED noise to the
+    # existing column (`col + noise`). That does nothing for an all-NaN
+    # column — NaN + anything is still NaN — which is almost certainly
+    # why the crash persisted after that fix shipped. Replace the column
+    # outright instead, centred on whatever real value existed (or 0 if
+    # none did), so this works for both the constant-value and the
+    # all-NaN case.
     _rng = np.random.RandomState(42)
     for _col in X_train.columns:
-        if X_train[_col].nunique() < 2:
-            _scale = max(abs(X_train[_col].iloc[0]) * 1e-6, 1e-9) if len(X_train) else 1e-9
-            X_train[_col] = X_train[_col] + _rng.normal(0, _scale, size=len(X_train))
-            print(f"  [diagnostic] '{_col}' was constant across the training set — "
-                  f"added negligible noise to avoid the sklearn binning crash.")
+        if X_train[_col].nunique(dropna=True) < 2:
+            _non_null = X_train[_col].dropna()
+            _center = float(_non_null.iloc[0]) if len(_non_null) else 0.0
+            _scale = max(abs(_center) * 1e-6, 1e-9)
+            X_train[_col] = _center + _rng.normal(0, _scale, size=len(X_train))
+            print(f"  [diagnostic] '{_col}' had fewer than 2 distinct non-null values "
+                  f"(center={_center}) — replaced with negligible noise around that "
+                  f"value to avoid the sklearn binning crash.")
 
     # Diagnostic dump — every hypothesis tried so far (split size, early
     # stopping, thread count) has failed to reproduce this against
