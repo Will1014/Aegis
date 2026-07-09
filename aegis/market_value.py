@@ -55,6 +55,7 @@ from difflib import SequenceMatcher
 from typing import Optional, Dict, List, Tuple, Any
 
 import pandas as pd
+import numpy as np
 
 from .config import Config
 
@@ -466,6 +467,27 @@ def train_market_value_model(
 
     X_train, y_train = _encode(train_df), train_df["log_fee"].astype(float)
 
+    # Diagnostic dump — every hypothesis tried so far (split size, early
+    # stopping, thread count) has failed to reproduce this against
+    # synthetic data, so guessing further isn't productive. This prints
+    # the ACTUAL data characteristics going into the failing .fit() call,
+    # so if it crashes again we see what's really in X_train rather than
+    # guessing a fourth time.
+    print(f"  [diagnostic] X_train shape: {X_train.shape}, dtypes: {dict(X_train.dtypes.astype(str))}")
+    print(f"  [diagnostic] X_train describe:\n{X_train.describe().to_string()}")
+    print(f"  [diagnostic] X_train has inf: {np.isinf(X_train.to_numpy(dtype=float)).any()}, "
+          f"has nan: {X_train.isna().any().any()}")
+    print(f"  [diagnostic] X_train nunique per column: {dict(X_train.nunique())}")
+    print(f"  [diagnostic] y_train shape: {y_train.shape}, "
+          f"has inf: {np.isinf(y_train.to_numpy(dtype=float)).any()}, "
+          f"has nan: {y_train.isna().any()}")
+    print(f"  [diagnostic] sklearn n_threads env: OMP_NUM_THREADS={os.environ.get('OMP_NUM_THREADS')!r}")
+    try:
+        from sklearn.utils._openmp_helpers import _openmp_effective_n_threads as _oent
+        print(f"  [diagnostic] _openmp_effective_n_threads() = {_oent()}")
+    except Exception as _diag_e:
+        print(f"  [diagnostic] could not check effective n_threads: {_diag_e}")
+
     # The real production traceback (finally captured after fixing the
     # stdout/stderr logging bug) showed the crash happening inside
     # sklearn's _BinMapper.fit() — specifically its per-feature threshold
@@ -483,6 +505,10 @@ def train_market_value_model(
     # rather than continuing to guess at its exact nature. Training runs
     # once a day; the performance cost of single-threading it is
     # irrelevant.
+    #
+    # NOTE: if this still crashes with OMP_NUM_THREADS=1 confirmed above
+    # as actually 1, the concurrency hypothesis is wrong too — see the
+    # [diagnostic] lines above for what to check next.
     _prev_omp = os.environ.get("OMP_NUM_THREADS")
     os.environ["OMP_NUM_THREADS"] = "1"
     try:
