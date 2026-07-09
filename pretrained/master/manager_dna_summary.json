@@ -1,14 +1,14 @@
 {
-  "created_at": "2026-07-09T09:41:03.554954",
+  "created_at": "2026-07-09T12:02:46.107468",
   "season_id": 23614,
   "n_managers": 440,
   "n_clusters": 6,
   "cluster_names": {
     "0": "Balanced",
-    "1": "Counter-Attack",
+    "1": "High-Press",
     "2": "Defensive",
-    "3": "Possession-Based",
-    "4": "High-Press",
+    "3": "Counter-Attack",
+    "4": "Possession-Based",
     "5": "Attacking"
   },
   "feature_cols": [
@@ -90,11 +90,10 @@
       "Francesco Farioli",
       "Pascal Bosschaart",
       "Maarten Martens",
-      "Ruben Filipe Marques Amorim",
-      "Mikel Arteta Amatriain",
       "Josep Guardiola i Sala",
       "Arne Slot",
       "Enzo Maresca",
+      "Mikel Arteta Amatriain",
       "Fabian H\u00fcrzeler",
       "Kim Alexander Hellberg",
       "Kieran McKenna",
@@ -109,7 +108,7 @@
       "Johnny Heitinga",
       "Robin Veldman"
     ],
-    "Counter-Attack": [
+    "High-Press": [
       "Thomas Frank",
       "Richard Beale",
       "Alex Neil",
@@ -175,7 +174,6 @@
       "Darren Moore",
       "Andrew John Woodman",
       "Grant McCann",
-      "Peter Wild",
       "Johnnie Jackson",
       "Andrew Whing",
       "Mathew John Sadler",
@@ -204,7 +202,6 @@
     ],
     "Defensive": [
       "Marco Alexandre Saraiva da Silva",
-      "Patrick Vieira",
       "Paul Ince",
       "Mick McCarthy",
       "Gareth Ainsworth",
@@ -269,6 +266,7 @@
       "Shaun Maloney",
       "Gareth Ainsworth",
       "Derek Watt Adams",
+      "Peter Wild",
       "Ian Holloway",
       "N\u00e9lson Marques Jardim",
       "Michael John Flynn",
@@ -300,13 +298,14 @@
       "Michael Antony Appleton",
       "John Doolan"
     ],
-    "Possession-Based": [
+    "Counter-Attack": [
       "Rub\u00e9n Sell\u00e9s Salvador",
       "Brendan Rodgers",
       "Frank Lampard",
       "Julen Lopetegui Argote",
       "Gary Paul O'Neil",
       "Antonio Conte",
+      "Patrick Vieira",
       "Jesse Marsch",
       "David Moyes",
       "Steve Cooper",
@@ -365,13 +364,13 @@
       "Erwin van de Looi",
       "Carl Hoefkens",
       "Johnny Jansen",
-      "David Moyes",
-      "Nuno Herlander Sim\u00f5es Esp\u00edrito Santo",
       "Oliver Glasner",
-      "R\u00e9gis Le Bris",
       "Robert Owen Edwards",
       "Sean Dyche",
       "Scott Parker",
+      "R\u00e9gis Le Bris",
+      "David Moyes",
+      "Nuno Herlander Sim\u00f5es Esp\u00edrito Santo",
       "Sergej Jakirovi\u0107",
       "Henrik Pedersen",
       "Bas Sibum",
@@ -385,7 +384,7 @@
       "Ron Jans",
       "Melvin Boel"
     ],
-    "High-Press": [
+    "Possession-Based": [
       "Thomas Tuchel",
       "Nigel Pearson",
       "Tony Mowbray",
@@ -443,11 +442,12 @@
       "Henk Brugge",
       "Ron Jans",
       "Andoni Iraola Sagarna",
+      "Michael Carrick",
       "Thomas Frank",
       "Unai Emery Etxegoien",
-      "Marco Alexandre Saraiva da Silva",
       "Eddie Howe",
       "Daniel Farke",
+      "Marco Alexandre Saraiva da Silva",
       "Mark Robins",
       "Edward Still",
       "Val\u00e9rien Isma\u00ebl",
