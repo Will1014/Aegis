@@ -44,6 +44,7 @@ below in one of those environments before relying on it.
 from __future__ import annotations
 
 import io
+import os
 import json
 import time
 import pickle
@@ -343,9 +344,38 @@ def train_market_value_model(
             "too few to train a reliable model. Check data fetch succeeded."
         )
 
-    cutoff = df["transfer_date"].quantile(0.85)
-    train_df = df[df["transfer_date"] < cutoff]
-    test_df = df[df["transfer_date"] >= cutoff]
+    # Time-based split for evaluation — deliberately NOT random, so the
+    # model can't leak future transfer prices into training (see docstring).
+    #
+    # Guard against a degenerate split: if transfer dates are heavily
+    # weighted toward recent seasons (plausible for a scraped dataset —
+    # more complete data close to "now"), a fixed 85th-percentile cutoff
+    # can leave the test set with only a handful of rows, or even zero.
+    # Predicting on a near-empty array is a strong suspect for the
+    # "window shape cannot be larger than input array shape" crash seen
+    # in production — that error is numpy's sliding_window_view guard,
+    # and something in sklearn's batched prediction path can hit it on
+    # very small inputs. Widen the cutoff until the test set has a sane
+    # minimum size rather than trusting a single fixed quantile.
+    MIN_TEST_ROWS = 30
+    MIN_TRAIN_ROWS = 100
+    train_df = test_df = None
+    for q in (0.85, 0.75, 0.65, 0.50, 0.30):
+        cutoff = df["transfer_date"].quantile(q)
+        candidate_train = df[df["transfer_date"] < cutoff]
+        candidate_test = df[df["transfer_date"] >= cutoff]
+        if len(candidate_test) >= MIN_TEST_ROWS and len(candidate_train) >= MIN_TRAIN_ROWS:
+            train_df, test_df = candidate_train, candidate_test
+            break
+    if train_df is None:
+        # Nothing worked — dates are too clustered or dataset too small
+        # for ANY split to give a reasonably sized test set. Fall back to
+        # training on everything with no held-out evaluation, rather than
+        # failing outright — a model with unknown-but-plausible accuracy
+        # beats no model at all here.
+        print(f"  ⚠ Could not find a time split with ≥{MIN_TEST_ROWS} test rows "
+              f"— training on full dataset with no held-out evaluation.")
+        train_df, test_df = df, df.iloc[0:0]
 
     position_map = {p: i for i, p in enumerate(sorted(df["position"].dropna().unique()))}
 
@@ -355,38 +385,69 @@ def train_market_value_model(
         return out.fillna(out.median(numeric_only=True))
 
     X_train, y_train = _encode(train_df), train_df["log_fee"].astype(float)
-    X_test, y_test = _encode(test_df), test_df["log_fee"].astype(float)
 
-    model = HistGradientBoostingRegressor(
-        max_depth=6, learning_rate=0.05, max_iter=300, random_state=42,
-        # We already hold out a deliberate time-based test set above (see
-        # docstring — this avoids the model leaking future transfer prices
-        # into training). Leaving sklearn's default early_stopping='auto'
-        # enabled would carve out a SECOND, randomly-sampled validation
-        # split from inside our training data, silently undermining that.
-        # It's also the most likely source of a "window shape cannot be
-        # larger than input array shape" crash — that error comes from
-        # sklearn's internal early-stopping convergence check, which
-        # compares a window of the last n_iter_no_change scores; on a
-        # training set this size, that window can end up larger than the
-        # number of scores actually recorded. Disabling it removes that
-        # whole code path.
-        early_stopping=False,
-    )
-    model.fit(X_train, y_train)
+    # The real production traceback (finally captured after fixing the
+    # stdout/stderr logging bug) showed the crash happening inside
+    # sklearn's _BinMapper.fit() — specifically its per-feature threshold
+    # computation, which runs via joblib's Parallel(backend="threading")
+    # across sklearn's OpenMP-detected thread count. This sandbox has
+    # exactly 1 CPU, so that parallel path never actually ran concurrently
+    # here (n_threads always resolved to 1) — which is exactly why dozens
+    # of single-threaded reproduction attempts against the same function,
+    # with deliberately pathological data, never triggered it. GitHub
+    # Actions runners have multiple cores, so the same code runs with real
+    # concurrency there. Forcing OMP_NUM_THREADS=1 makes
+    # sklearn._openmp_effective_n_threads() return 1 everywhere, which
+    # forces that Parallel(...) call to run sequentially — eliminating the
+    # entire code path where a concurrency-specific issue could occur,
+    # rather than continuing to guess at its exact nature. Training runs
+    # once a day; the performance cost of single-threading it is
+    # irrelevant.
+    _prev_omp = os.environ.get("OMP_NUM_THREADS")
+    os.environ["OMP_NUM_THREADS"] = "1"
+    try:
+        model = HistGradientBoostingRegressor(
+            max_depth=6, learning_rate=0.05, max_iter=300, random_state=42,
+            # We already hold out a deliberate time-based test set above, so
+            # sklearn's own internal validation split (early_stopping='auto')
+            # would be redundant at best. Confirmed NOT the cause of the
+            # "window shape" crash (still occurred with this off) — kept off
+            # anyway since our own split makes it unnecessary.
+            early_stopping=False,
+        )
+        model.fit(X_train, y_train)
+    finally:
+        if _prev_omp is None:
+            os.environ.pop("OMP_NUM_THREADS", None)
+        else:
+            os.environ["OMP_NUM_THREADS"] = _prev_omp
 
-    preds_eur = pd.Series(model.predict(X_test)).apply(lambda x: __import__("math").expm1(x))
-    actual_eur = test_df["transfer_fee"].reset_index(drop=True)
-    mae_eur = mean_absolute_error(actual_eur, preds_eur)
-    mape = float((abs(actual_eur - preds_eur) / actual_eur.clip(lower=1)).median())
+    # Evaluation is informational (goes into metadata for the pretrain log)
+    # — isolate it so a failure here can't lose an otherwise-successfully-
+    # fit()'d model. If this is where "window shape" was actually coming
+    # from, we now get a real model AND a diagnosable traceback instead of
+    # neither.
+    mae_eur, mape, n_test = None, None, len(test_df)
+    if len(test_df) > 0:
+        try:
+            X_test = _encode(test_df)
+            preds_eur = pd.Series(model.predict(X_test)).apply(lambda x: __import__("math").expm1(x))
+            actual_eur = test_df["transfer_fee"].reset_index(drop=True)
+            mae_eur = mean_absolute_error(actual_eur, preds_eur)
+            mape = float((abs(actual_eur - preds_eur) / actual_eur.clip(lower=1)).median())
+        except Exception as eval_err:
+            print(f"  ⚠ Evaluation step failed (model itself trained fine): {eval_err}")
+            import traceback as _tb
+            print(_tb.format_exc())
+            n_test = 0
 
     metadata = {
         "trained_at": datetime.now().isoformat(),
         "n_train": len(train_df),
-        "n_test": len(test_df),
+        "n_test": n_test,
         "position_map": position_map,
-        "mae_eur": round(mae_eur),
-        "median_ape": round(mape, 3),
+        "mae_eur": round(mae_eur) if mae_eur is not None else None,
+        "median_ape": round(mape, 3) if mape is not None else None,
         "feature_cols": FEATURE_COLS,
     }
     return model, metadata
@@ -634,7 +695,10 @@ if __name__ == "__main__":
     model, metadata = train_market_value_model(client)
     print(f"  ✓ trained on {metadata['n_train']} transfers, "
           f"tested on {metadata['n_test']}")
-    print(f"  MAE: €{metadata['mae_eur']:,} | median abs% error: {metadata['median_ape']:.0%}")
+    if metadata.get("mae_eur") is not None:
+        print(f"  MAE: €{metadata['mae_eur']:,} | median abs% error: {metadata['median_ape']:.0%}")
+    else:
+        print(f"  No held-out evaluation available (n_test={metadata.get('n_test', 0)})")
 
     print("\nSample recruitment cost band (Premier League, ATT, Critical gap):")
     band = estimate_recruitment_cost_band("ATT", 2, "Critical", (model, metadata), client)
