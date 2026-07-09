@@ -559,23 +559,27 @@ def estimate_recruitment_cost_band(
     if tm_position not in position_map:
         return _fallback(f"Position '{pos_group}' not found in the trained model.")
 
+    import math
+
     client = client or MarketValueClient()
     tm_league = LEAGUE_CODE_MAP.get(competition_id)
 
     n_clubs_matched = 0
     try:
         clubs = client.get_clubs()
+        all_values = pd.to_numeric(clubs.get("total_market_value"), errors="coerce").dropna()
         if tm_league:
             league_clubs = clubs[clubs["domestic_competition_id"] == tm_league]
-            n_clubs_matched = len(league_clubs)
-            club_tier = float(league_clubs["total_market_value"].median()) if n_clubs_matched else \
-                float(clubs["total_market_value"].median())
+            league_values = pd.to_numeric(league_clubs.get("total_market_value"), errors="coerce").dropna()
+            n_clubs_matched = len(league_values)  # count clubs with a USABLE value, not just a league match
+            club_tier = float(league_values.median()) if n_clubs_matched else float(all_values.median())
         else:
-            club_tier = float(clubs["total_market_value"].median())
+            club_tier = float(all_values.median())
+        if math.isnan(club_tier):
+            club_tier = 100_000_000.0  # every value was unparseable — mid-table fallback
     except Exception:
         club_tier = 100_000_000.0  # mid-table fallback if clubs fetch fails
 
-    import math
     rows = []
     for age in range(22, 31):
         rows.append({

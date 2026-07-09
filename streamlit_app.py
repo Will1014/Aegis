@@ -158,6 +158,45 @@ def metric_card(value, label, color_class="gradient"):
     )
 
 
+def recruitment_display_df(rec_list):
+    """
+    Build a clean Recruitment Priorities display table from the raw
+    recruitment list, which now also carries internal confidence-tier
+    fields (cost_tier, cost_tooltip, etc. — see market_value.py
+    estimate_recruitment_cost_band). Folds those into a single Data column
+    with a visible flag rather than dumping them as separate raw columns.
+    """
+    rows = []
+    for r in rec_list:
+        flag = r.get("cost_flag_symbol", "")
+        rows.append({
+            "Position": r.get("position"),
+            "Gap": r.get("gap"),
+            "Urgency": r.get("urgency"),
+            "Timeline": r.get("timeline"),
+            "Est. Cost": f"{flag} £{r.get('cost_low')}–{r.get('cost_high')}M".strip(),
+            "Data": r.get("cost_tier_label", "—"),
+        })
+    return pd.DataFrame(rows)
+
+
+def recruitment_confidence_caption(rec_list):
+    """Show a caption explaining the confidence flags, escalating to a
+    warning if any row is a pure generic placeholder (not real data)."""
+    if any(r.get("cost_tier") == "fallback_generic" for r in rec_list):
+        st.warning(
+            "⚠️ Some cost estimates below are generic placeholders, not "
+            "calculated from real transfer data — the market-value model "
+            "hasn't finished training yet.",
+            icon="⚠️",
+        )
+    else:
+        st.caption(
+            "● Calibrated to real league club data · ◐ Thin league data or "
+            "no league context · ○ Generic placeholder"
+        )
+
+
 def classification_bar(counts):
     """Render a horizontal classification breakdown."""
     # Minimum weight of 3 prevents columns from collapsing so narrow
@@ -1376,34 +1415,37 @@ if is_transfer_costs:
                 tm_code = LEAGUE_CODE_MAP.get(_tc_league_id)
                 league_clubs = clubs[clubs["domestic_competition_id"] == tm_code] if tm_code else clubs.iloc[0:0]
 
+                # total_market_value can come through as NaN or a non-numeric
+                # dtype depending on how the source CSV parsed for this
+                # league — coerce explicitly and drop what doesn't parse,
+                # rather than letting a bad value silently propagate NaN
+                # into every squad-value figure shown.
+                _values = pd.to_numeric(league_clubs.get("total_market_value"), errors="coerce").dropna()
+                _n_valid = len(_values)
+
                 st.session_state.tc_data = {
                     "league_name": _tc_league_name,
                     "league_id": _tc_league_id,
                     "tm_code": tm_code,
                     "n_clubs": len(league_clubs),
+                    "n_clubs_with_value": _n_valid,
                     "median_value_gbp_m": (
-                        round(league_clubs["total_market_value"].median() * EUR_TO_GBP / 1_000_000, 1)
-                        if len(league_clubs) else None
+                        round(_values.median() * EUR_TO_GBP / 1_000_000, 1) if _n_valid else None
                     ),
                     "median_value_eur_m": (
-                        round(league_clubs["total_market_value"].median() / 1_000_000, 1)
-                        if len(league_clubs) else None
+                        round(_values.median() / 1_000_000, 1) if _n_valid else None
                     ),
                     "max_value_gbp_m": (
-                        round(league_clubs["total_market_value"].max() * EUR_TO_GBP / 1_000_000, 1)
-                        if len(league_clubs) else None
+                        round(_values.max() * EUR_TO_GBP / 1_000_000, 1) if _n_valid else None
                     ),
                     "max_value_eur_m": (
-                        round(league_clubs["total_market_value"].max() / 1_000_000, 1)
-                        if len(league_clubs) else None
+                        round(_values.max() / 1_000_000, 1) if _n_valid else None
                     ),
                     "min_value_gbp_m": (
-                        round(league_clubs["total_market_value"].min() * EUR_TO_GBP / 1_000_000, 1)
-                        if len(league_clubs) else None
+                        round(_values.min() * EUR_TO_GBP / 1_000_000, 1) if _n_valid else None
                     ),
                     "min_value_eur_m": (
-                        round(league_clubs["total_market_value"].min() / 1_000_000, 1)
-                        if len(league_clubs) else None
+                        round(_values.min() / 1_000_000, 1) if _n_valid else None
                     ),
                     "model_trained": bundle is not None,
                     "model_meta": bundle[1] if bundle else None,
@@ -1449,13 +1491,20 @@ if is_transfer_costs:
 
     st.write("")
     st.markdown(f"**{tc_data['league_name']} — Squad Value Context** "
-               f"({tc_data['n_clubs']} clubs matched)")
+               f"({tc_data['n_clubs_with_value']} of {tc_data['n_clubs']} matched clubs have usable value data)")
 
     if tc_data["median_value_gbp_m"] is not None:
         c1, c2, c3 = st.columns(3)
         c1.markdown(metric_card(f"£{tc_data['min_value_gbp_m']:.0f}M (€{tc_data['min_value_eur_m']:.0f}M)", "Lowest Squad Value"), unsafe_allow_html=True)
         c2.markdown(metric_card(f"£{tc_data['median_value_gbp_m']:.0f}M (€{tc_data['median_value_eur_m']:.0f}M)", "Median Squad Value", "orange"), unsafe_allow_html=True)
         c3.markdown(metric_card(f"£{tc_data['max_value_gbp_m']:.0f}M (€{tc_data['max_value_eur_m']:.0f}M)", "Highest Squad Value"), unsafe_allow_html=True)
+    elif tc_data["n_clubs"] > 0:
+        st.warning(
+            f"⚠️ {tc_data['n_clubs']} clubs matched for this league, but none had "
+            f"a usable market value figure (missing or non-numeric in the source "
+            f"data) — squad value context unavailable.",
+            icon="⚠️",
+        )
     else:
         st.caption("No club market-value data matched for this league.")
 
@@ -1475,21 +1524,35 @@ if is_transfer_costs:
         _client = _MVC()
         _bundle = _load_mv()
         _rows = []
+        _tier_symbols = {"league_calibrated": "●", "league_thin": "◐",
+                         "no_league_context": "◐", "fallback_generic": "○"}
+        _tier_labels = {"league_calibrated": "Calibrated", "league_thin": "Thin data",
+                        "no_league_context": "No league", "fallback_generic": "Placeholder"}
         for _pos, _pos_label in [("GK", "Goalkeeper"), ("DEF", "Defender"),
                                   ("MID", "Midfielder"), ("ATT", "Attacker")]:
             _row = {"Position": _pos_label}
+            _row_tier = None
             for _urg in ["Critical", "High", "Medium"]:
-                _lo, _hi = estimate_recruitment_cost_band(
+                _band = estimate_recruitment_cost_band(
                     _pos, tc_data["league_id"], _urg, _bundle, _client)
+                _lo, _hi = _band["cost_low"], _band["cost_high"]
+                _row_tier = _band["tier"]  # same tier across urgencies for a given position
                 # estimate_recruitment_cost_band returns £ only — reverse the
                 # same static rate to show € too, so this can be checked
                 # directly against Transfermarkt without doing the maths by hand.
                 _lo_eur = _lo / _EUR_TO_GBP
                 _hi_eur = _hi / _EUR_TO_GBP
                 _row[_urg] = f"£{_lo:.0f}–{_hi:.0f}M (€{_lo_eur:.0f}–{_hi_eur:.0f}M)"
+            _row["Data"] = f"{_tier_symbols.get(_row_tier, '○')} {_tier_labels.get(_row_tier, 'Unknown')}"
             _rows.append(_row)
 
-        st.dataframe(pd.DataFrame(_rows), hide_index=True, use_container_width=True)
+        st.dataframe(pd.DataFrame(_rows)[["Position", "Data", "Critical", "High", "Medium"]],
+                    hide_index=True, use_container_width=True)
+        st.caption(
+            "● Calibrated to real league club data · ◐ Thin league data or no "
+            "league context · ○ Model not trained — generic placeholder, not "
+            "calculated from real transfer data."
+        )
     except Exception as exc:
         st.error(f"Could not compute cost bands: {exc}")
 
@@ -2045,7 +2108,8 @@ if results_b is None and results_a is not None:
         if _rec:
             st.write("")
             st.markdown("**Recruitment Priorities**")
-            st.dataframe(pd.DataFrame(_rec), use_container_width=True, hide_index=True)
+            st.dataframe(recruitment_display_df(_rec), use_container_width=True, hide_index=True)
+            recruitment_confidence_caption(_rec)
 
     # ─────────────────────────────────────────────────────────────────────────
     # TAB: DASHBOARD
@@ -2481,14 +2545,16 @@ elif results_b is not None:
                 st.markdown(f'<span class="scenario-header scenario-a">A: {mgr_a}</span>',
                             unsafe_allow_html=True)
                 if rec_a:
-                    st.dataframe(pd.DataFrame(rec_a), use_container_width=True, hide_index=True)
+                    st.dataframe(recruitment_display_df(rec_a), use_container_width=True, hide_index=True)
+                    recruitment_confidence_caption(rec_a)
                 else:
                     st.caption("None identified.")
             with rc_b:
                 st.markdown(f'<span class="scenario-header scenario-b">B: {mgr_b}</span>',
                             unsafe_allow_html=True)
                 if rec_b:
-                    st.dataframe(pd.DataFrame(rec_b), use_container_width=True, hide_index=True)
+                    st.dataframe(recruitment_display_df(rec_b), use_container_width=True, hide_index=True)
+                    recruitment_confidence_caption(rec_b)
                 else:
                     st.caption("None identified.")
 
