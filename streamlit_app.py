@@ -1178,12 +1178,32 @@ with st.sidebar:
             st.session_state.dossier_player_positions = {}
             st.session_state["d_league_last"] = d_league
 
+        # Auto-load whenever the list is empty — covers first render and
+        # any league change (which clears it above). No button: this runs
+        # before the Position/Player widgets below, so by the time they're
+        # drawn the list is already populated in the same script pass —
+        # no rerun needed either, unlike the old button-triggered version.
+        if has_creds and not st.session_state.dossier_player_list:
+            with st.spinner(f"Loading players for {d_league}…"):
+                try:
+                    os.environ["SB_USERNAME"] = sb_user
+                    os.environ["SB_PASSWORD"] = sb_pass
+                    from aegis import StatsBombClient, Config
+                    from aegis.player_dossier import PlayerDossierGenerator, MIN_MINUTES
+                    Config.set_base_dir(base_dir)
+                    sb = StatsBombClient()
+                    _stats = sb.get_player_season_stats(d_league_id, season_id)
+                    gen = PlayerDossierGenerator(_stats)
+                    st.session_state.dossier_player_list = gen.list_players(min_minutes=MIN_MINUTES)
+                    st.session_state.dossier_player_positions = gen.list_players_by_position(min_minutes=MIN_MINUTES)
+                except Exception as exc:
+                    st.error(f"Could not load players: {exc}")
+
         d_position = st.selectbox(
             "Position",
             ["All", "Goalkeeper", "Defender", "Midfielder", "Attacker"],
             key="d_position",
-            help="Filters the player list below by broad position group. "
-                 "Click Load Players first to populate the list for this league.",
+            help="Filters the player list below by broad position group.",
         )
 
         # Player list — filtered by position if a list has been loaded and
@@ -1199,31 +1219,6 @@ with st.sidebar:
         else:
             d_player = st.text_input("Player name", key="d_player_text",
                                      placeholder="e.g. Tae-Seok Lee")
-
-        if has_creds and st.button("🔍  Load Players", key="d_load",
-                                   use_container_width=True):
-            with st.spinner("Loading player list…"):
-                try:
-                    os.environ["SB_USERNAME"] = sb_user
-                    os.environ["SB_PASSWORD"] = sb_pass
-                    from aegis import StatsBombClient, Config
-                    from aegis.player_dossier import PlayerDossierGenerator, MIN_MINUTES
-                    Config.set_base_dir(base_dir)
-                    sb = StatsBombClient()
-                    _stats = sb.get_player_season_stats(d_league_id, season_id)
-                    gen = PlayerDossierGenerator(_stats)
-                    st.session_state.dossier_player_list = gen.list_players(min_minutes=MIN_MINUTES)
-                    st.session_state.dossier_player_positions = gen.list_players_by_position(min_minutes=MIN_MINUTES)
-                    st.success(f"✓ {len(st.session_state.dossier_player_list)} players loaded")
-                    # Player widget is coded above this button, so within
-                    # THIS run it already read the old (empty) list — without
-                    # forcing an immediate rerun it would show the success
-                    # message but leave the Player field looking stale until
-                    # the next unrelated interaction. Rerun now so the
-                    # freshly loaded list shows up in the same click.
-                    st.rerun()
-                except Exception as exc:
-                    st.error(f"Could not load players: {exc}")
 
         # Optional enrichment — only fields not auto-populated from StatsBomb
         # or the market-value model. TMV is no longer here — it's estimated
