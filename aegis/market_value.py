@@ -194,6 +194,33 @@ class MarketValueClient:
     def get_clubs(self, use_cache: bool = True) -> pd.DataFrame:
         return self.get_table("clubs", use_cache)
 
+    def club_squad_values(self, tm_league: Optional[str] = None, use_cache: bool = True) -> pd.Series:
+        """
+        Per-club total squad value, computed by summing each club's
+        players' individual market values — NOT clubs.total_market_value.
+
+        clubs.total_market_value looks authoritative but is unreliable in
+        practice: per the scraper's own source (base_clubs.sql), it's set
+        to null whenever the scraper didn't capture that specific summary
+        field on a club's page at snapshot time — a known-sparse field
+        across the whole dataset, confirmed empirically (came back 0-of-37
+        usable even for Premier League, which otherwise has excellent
+        coverage). players.market_value_in_eur is the same field already
+        verified to match Transfermarkt exactly for individual players
+        (see match_player) — summing it per club is a more reliable proxy
+        for squad value than trusting the sparse pre-aggregated field.
+
+        Returns a Series of summed squad values indexed by nothing
+        meaningful (one row per club) — use .median()/.min()/.max() etc.
+        directly, same as the old clubs.total_market_value.median() calls.
+        """
+        players = self.get_players(use_cache=use_cache)
+        if tm_league:
+            players = players[players.get("current_club_domestic_competition_id") == tm_league]
+        values = pd.to_numeric(players.get("market_value_in_eur"), errors="coerce")
+        grouped = players.assign(_mv=values).dropna(subset=["_mv"]).groupby("current_club_id")["_mv"].sum()
+        return grouped
+
     # -------------------------------------------------------------------
     # Player-level entity resolution (StatsBomb -> Transfermarkt)
     # -------------------------------------------------------------------
@@ -566,15 +593,10 @@ def estimate_recruitment_cost_band(
 
     n_clubs_matched = 0
     try:
-        clubs = client.get_clubs()
-        all_values = pd.to_numeric(clubs.get("total_market_value"), errors="coerce").dropna()
-        if tm_league:
-            league_clubs = clubs[clubs["domestic_competition_id"] == tm_league]
-            league_values = pd.to_numeric(league_clubs.get("total_market_value"), errors="coerce").dropna()
-            n_clubs_matched = len(league_values)  # count clubs with a USABLE value, not just a league match
-            club_tier = float(league_values.median()) if n_clubs_matched else float(all_values.median())
-        else:
-            club_tier = float(all_values.median())
+        league_values = client.club_squad_values(tm_league) if tm_league else pd.Series(dtype=float)
+        all_values = client.club_squad_values(None)
+        n_clubs_matched = len(league_values)  # clubs with a computable squad value, not just a league match
+        club_tier = float(league_values.median()) if n_clubs_matched else float(all_values.median())
         if math.isnan(club_tier):
             club_tier = 100_000_000.0  # every value was unparseable — mid-table fallback
     except Exception:

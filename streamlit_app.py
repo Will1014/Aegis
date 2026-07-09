@@ -1242,6 +1242,11 @@ with st.sidebar:
                    "independent of the StatsBomb manager-fit pipeline.")
         tc_league = st.selectbox(
             "League", list(COMPETITION_OPTIONS.keys()), key="tc_league")
+        tc_force_refresh = st.checkbox(
+            "Force refresh (ignore cache)", key="tc_force_refresh",
+            help="Bypasses the local cache and re-fetches from Transfermarkt. "
+                 "Cached tables normally refresh every 72h — use this if you "
+                 "suspect the cache is stale.")
         tc_load_clicked = st.button(
             "💰  Load Market Data", key="tc_load", use_container_width=True)
         league_id_a = team_a = coach_a = None
@@ -1410,24 +1415,32 @@ if is_transfer_costs:
 
                 client = MarketValueClient()
                 bundle = load_pretrained_market_value()
-                clubs = client.get_clubs()
+                _use_cache = not st.session_state.get("tc_force_refresh", False)
 
                 tm_code = LEAGUE_CODE_MAP.get(_tc_league_id)
-                league_clubs = clubs[clubs["domestic_competition_id"] == tm_code] if tm_code else clubs.iloc[0:0]
-
-                # total_market_value can come through as NaN or a non-numeric
-                # dtype depending on how the source CSV parsed for this
-                # league — coerce explicitly and drop what doesn't parse,
-                # rather than letting a bad value silently propagate NaN
-                # into every squad-value figure shown.
-                _values = pd.to_numeric(league_clubs.get("total_market_value"), errors="coerce").dropna()
+                # clubs.total_market_value looks authoritative but is
+                # documented (in the scraper's own source) as null whenever
+                # it wasn't captured on a club's page at snapshot time —
+                # confirmed empirically as unusably sparse (0 of 37 Premier
+                # League clubs had it). club_squad_values() computes the
+                # same thing by summing each club's players' individual
+                # market values instead — the same field already verified
+                # to match Transfermarkt exactly for individual players.
+                _values = client.club_squad_values(tm_code, use_cache=_use_cache) if tm_code else \
+                    client.club_squad_values(None, use_cache=_use_cache)
                 _n_valid = len(_values)
+                # n_clubs (distinct clubs matched to this league at all,
+                # regardless of whether a squad value could be computed)
+                # still comes from the clubs table, purely for the "X of Y"
+                # display context.
+                clubs = client.get_clubs(use_cache=_use_cache)
+                _n_clubs_total = len(clubs[clubs["domestic_competition_id"] == tm_code]) if tm_code else 0
 
                 st.session_state.tc_data = {
                     "league_name": _tc_league_name,
                     "league_id": _tc_league_id,
                     "tm_code": tm_code,
-                    "n_clubs": len(league_clubs),
+                    "n_clubs": _n_clubs_total,
                     "n_clubs_with_value": _n_valid,
                     "median_value_gbp_m": (
                         round(_values.median() * EUR_TO_GBP / 1_000_000, 1) if _n_valid else None
