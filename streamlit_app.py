@@ -80,6 +80,13 @@ st.markdown("""
         color: #64748b;
         margin-top: 0.3rem;
     }
+    .metric-card .value-secondary {
+        font-family: 'Space Mono', monospace;
+        font-size: 0.95rem;
+        font-weight: 400;
+        color: #64748b;
+        margin-top: 0.15rem;
+    }
 
     .scenario-header {
         font-family: 'Space Mono', monospace;
@@ -153,6 +160,23 @@ def metric_card(value, label, color_class="gradient"):
     return (
         f'<div class="metric-card">'
         f'<div class="value {color_class}">{value}</div>'
+        f'<div class="label">{label}</div>'
+        f'</div>'
+    )
+
+
+def dual_metric_card(primary, secondary, label, color_class="gradient"):
+    """
+    Same visual weight/font as metric_card for the primary figure — matches
+    every other card in the app. The secondary currency figure is demoted
+    to a small muted line underneath instead of crammed onto the same line
+    at full size, which read as cluttered/oversized compared to every
+    single-value card elsewhere (e.g. Average Fit, Archetype).
+    """
+    return (
+        f'<div class="metric-card">'
+        f'<div class="value {color_class}">{primary}</div>'
+        f'<div class="value-secondary">{secondary}</div>'
         f'<div class="label">{label}</div>'
         f'</div>'
     )
@@ -1480,101 +1504,171 @@ if is_transfer_costs:
 """, unsafe_allow_html=True)
         st.stop()
 
-    # Coverage caveat — Championship/League One/League Two aren't in the
-    # transfermarkt-datasets scrape scope (competition_codes var), so
-    # numbers for those leagues are lower-confidence. Premier League and
-    # Eredivisie are well covered.
-    if tc_data["league_id"] in (3, 4, 5):
-        st.warning(
-            f"⚠️ {tc_data['league_name']} has limited coverage in the Transfermarkt "
-            "dataset — its scrape scope doesn't include English tiers below the "
-            "Premier League. Treat these numbers as lower-confidence than "
-            "Premier League or Eredivisie estimates.",
-            icon="⚠️",
-        )
+    _tab_overview, _tab_club, _tab_player = st.tabs(["Overview", "By Club", "By Player"])
 
-    if not tc_data["model_trained"]:
-        st.info(
-            "ℹ️ The recruitment-cost model hasn't been trained yet (first "
-            "deploy, or last night's training run failed). Showing static "
-            "fallback estimates — these will become data-driven once the "
-            "nightly pretrain job completes.",
-            icon="ℹ️",
-        )
+    with _tab_overview:
+        # Coverage caveat — Championship/League One/League Two aren't in the
+        # transfermarkt-datasets scrape scope (competition_codes var), so
+        # numbers for those leagues are lower-confidence. Premier League and
+        # Eredivisie are well covered.
+        if tc_data["league_id"] in (3, 4, 5):
+            st.warning(
+                f"⚠️ {tc_data['league_name']} has limited coverage in the Transfermarkt "
+                "dataset — its scrape scope doesn't include English tiers below the "
+                "Premier League. Treat these numbers as lower-confidence than "
+                "Premier League or Eredivisie estimates.",
+                icon="⚠️",
+            )
 
-    st.write("")
-    st.markdown(f"**{tc_data['league_name']} — Squad Value Context** "
-               f"({tc_data['n_clubs_with_value']} of {tc_data['n_clubs']} matched clubs have usable value data)")
+        if not tc_data["model_trained"]:
+            st.info(
+                "ℹ️ The recruitment-cost model hasn't been trained yet (first "
+                "deploy, or last night's training run failed). Showing static "
+                "fallback estimates — these will become data-driven once the "
+                "nightly pretrain job completes.",
+                icon="ℹ️",
+            )
 
-    if tc_data["median_value_gbp_m"] is not None:
-        c1, c2, c3 = st.columns(3)
-        c1.markdown(metric_card(f"£{tc_data['min_value_gbp_m']:.0f}M (€{tc_data['min_value_eur_m']:.0f}M)", "Lowest Squad Value"), unsafe_allow_html=True)
-        c2.markdown(metric_card(f"£{tc_data['median_value_gbp_m']:.0f}M (€{tc_data['median_value_eur_m']:.0f}M)", "Median Squad Value", "orange"), unsafe_allow_html=True)
-        c3.markdown(metric_card(f"£{tc_data['max_value_gbp_m']:.0f}M (€{tc_data['max_value_eur_m']:.0f}M)", "Highest Squad Value"), unsafe_allow_html=True)
-    elif tc_data["n_clubs"] > 0:
-        st.warning(
-            f"⚠️ {tc_data['n_clubs']} clubs matched for this league, but none had "
-            f"a usable market value figure (missing or non-numeric in the source "
-            f"data) — squad value context unavailable.",
-            icon="⚠️",
-        )
-    else:
-        st.caption("No club market-value data matched for this league.")
+        st.write("")
+        st.markdown(f"**{tc_data['league_name']} — Squad Value Context** "
+                   f"({tc_data['n_clubs_with_value']} of {tc_data['n_clubs']} matched clubs have usable value data)")
 
-    st.write("")
-    st.markdown("**Estimated Recruitment Cost by Position & Urgency**")
-    st.caption(
-        "Critical = need a proven upgrade (top of the market-value distribution "
-        "for this position/league). Medium = a squad-depth addition can suffice."
-    )
+        if tc_data["median_value_gbp_m"] is not None:
+            c1, c2, c3 = st.columns(3)
+            c1.markdown(dual_metric_card(f"£{tc_data['min_value_gbp_m']:.0f}M", f"€{tc_data['min_value_eur_m']:.0f}M", "Lowest Squad Value"), unsafe_allow_html=True)
+            c2.markdown(dual_metric_card(f"£{tc_data['median_value_gbp_m']:.0f}M", f"€{tc_data['median_value_eur_m']:.0f}M", "Median Squad Value", "orange"), unsafe_allow_html=True)
+            c3.markdown(dual_metric_card(f"£{tc_data['max_value_gbp_m']:.0f}M", f"€{tc_data['max_value_eur_m']:.0f}M", "Highest Squad Value"), unsafe_allow_html=True)
+            st.caption("See the **By Club** tab for which club sits at each end of this range.")
+        elif tc_data["n_clubs"] > 0:
+            st.warning(
+                f"⚠️ {tc_data['n_clubs']} clubs matched for this league, but none had "
+                f"a usable market value figure (missing or non-numeric in the source "
+                f"data) — squad value context unavailable.",
+                icon="⚠️",
+            )
+        else:
+            st.caption("No club market-value data matched for this league.")
 
-    try:
-        from aegis.market_value import (
-            MarketValueClient as _MVC, estimate_recruitment_cost_band, EUR_TO_GBP as _EUR_TO_GBP,
-        )
-        from aegis.pretrain import load_pretrained_market_value as _load_mv
-
-        _client = _MVC()
-        _bundle = _load_mv()
-        _rows = []
-        _tier_symbols = {"league_calibrated": "●", "league_thin": "◐",
-                         "no_league_context": "◐", "fallback_generic": "○"}
-        _tier_labels = {"league_calibrated": "Calibrated", "league_thin": "Thin data",
-                        "no_league_context": "No league", "fallback_generic": "Placeholder"}
-        for _pos, _pos_label in [("GK", "Goalkeeper"), ("DEF", "Defender"),
-                                  ("MID", "Midfielder"), ("ATT", "Attacker")]:
-            _row = {"Position": _pos_label}
-            _row_tier = None
-            for _urg in ["Critical", "High", "Medium"]:
-                _band = estimate_recruitment_cost_band(
-                    _pos, tc_data["league_id"], _urg, _bundle, _client)
-                _lo, _hi = _band["cost_low"], _band["cost_high"]
-                _row_tier = _band["tier"]  # same tier across urgencies for a given position
-                # estimate_recruitment_cost_band returns £ only — reverse the
-                # same static rate to show € too, so this can be checked
-                # directly against Transfermarkt without doing the maths by hand.
-                _lo_eur = _lo / _EUR_TO_GBP
-                _hi_eur = _hi / _EUR_TO_GBP
-                _row[_urg] = f"£{_lo:.0f}–{_hi:.0f}M (€{_lo_eur:.0f}–{_hi_eur:.0f}M)"
-            _row["Data"] = f"{_tier_symbols.get(_row_tier, '○')} {_tier_labels.get(_row_tier, 'Unknown')}"
-            _rows.append(_row)
-
-        st.dataframe(pd.DataFrame(_rows)[["Position", "Data", "Critical", "High", "Medium"]],
-                    hide_index=True, use_container_width=True)
+        st.write("")
+        st.markdown("**Estimated Recruitment Cost by Position & Urgency**")
         st.caption(
-            "● Calibrated to real league club data · ◐ Thin league data or no "
-            "league context · ○ Model not trained — generic placeholder, not "
-            "calculated from real transfer data."
+            "Critical = need a proven upgrade (top of the market-value distribution "
+            "for this position/league). Medium = a squad-depth addition can suffice."
         )
-    except Exception as exc:
-        st.error(f"Could not compute cost bands: {exc}")
 
-    st.caption(
-        "Figures are estimated from historical Transfermarkt transfer data "
-        "and league squad values — not a quote. See the Recruitment "
-        "Priorities table in Manager Fit Report / Compare Managers for "
-        "cost bands tied to an actual squad's position gaps."
-    )
+        try:
+            from aegis.market_value import (
+                MarketValueClient as _MVC, estimate_recruitment_cost_band, EUR_TO_GBP as _EUR_TO_GBP,
+            )
+            from aegis.pretrain import load_pretrained_market_value as _load_mv
+
+            _client = _MVC()
+            _bundle = _load_mv()
+            _rows = []
+            _tier_symbols = {"league_calibrated": "●", "league_thin": "◐",
+                             "no_league_context": "◐", "fallback_generic": "○"}
+            _tier_labels = {"league_calibrated": "Calibrated", "league_thin": "Thin data",
+                            "no_league_context": "No league", "fallback_generic": "Placeholder"}
+            for _pos, _pos_label in [("GK", "Goalkeeper"), ("DEF", "Defender"),
+                                      ("MID", "Midfielder"), ("ATT", "Attacker")]:
+                _row = {"Position": _pos_label}
+                _row_tier = None
+                for _urg in ["Critical", "High", "Medium"]:
+                    _band = estimate_recruitment_cost_band(
+                        _pos, tc_data["league_id"], _urg, _bundle, _client)
+                    _lo, _hi = _band["cost_low"], _band["cost_high"]
+                    _row_tier = _band["tier"]  # same tier across urgencies for a given position
+                    # estimate_recruitment_cost_band returns £ only — reverse the
+                    # same static rate to show € too, so this can be checked
+                    # directly against Transfermarkt without doing the maths by hand.
+                    _lo_eur = _lo / _EUR_TO_GBP
+                    _hi_eur = _hi / _EUR_TO_GBP
+                    _row[_urg] = f"£{_lo:.0f}–{_hi:.0f}M (€{_lo_eur:.0f}–{_hi_eur:.0f}M)"
+                _row["Data"] = f"{_tier_symbols.get(_row_tier, '○')} {_tier_labels.get(_row_tier, 'Unknown')}"
+                _rows.append(_row)
+
+            st.dataframe(pd.DataFrame(_rows)[["Position", "Data", "Critical", "High", "Medium"]],
+                        hide_index=True, use_container_width=True)
+            st.caption(
+                "● Calibrated to real league club data · ◐ Thin league data or no "
+                "league context · ○ Model not trained — generic placeholder, not "
+                "calculated from real transfer data."
+            )
+        except Exception as exc:
+            st.error(f"Could not compute cost bands: {exc}")
+
+        st.caption(
+            "Figures are estimated from historical Transfermarkt transfer data "
+            "and league squad values — not a quote. See the Recruitment "
+            "Priorities table in Manager Fit Report / Compare Managers for "
+            "cost bands tied to an actual squad's position gaps."
+        )
+
+    with _tab_club:
+        st.caption(
+            "Every matched club's squad value, sorted lowest first — the "
+            "fastest way to see exactly which club is driving an "
+            "unexpectedly low or high figure in the Overview tab, and how "
+            "much of that is a data-completeness gap rather than a real "
+            "difference in squad value."
+        )
+        try:
+            from aegis.market_value import MarketValueClient as _MVC2, EUR_TO_GBP as _EUR_TO_GBP2
+            _client2 = _MVC2()
+            _detail = _client2.club_squad_values_detailed(tc_data.get("tm_code"))
+            if len(_detail):
+                _detail_display = pd.DataFrame({
+                    "Club": _detail["club_name"],
+                    "Squad Value": [
+                        f"£{v * _EUR_TO_GBP2 / 1_000_000:.0f}M (€{v / 1_000_000:.0f}M)"
+                        for v in _detail["squad_value_eur"]
+                    ],
+                    "Players Valued": [
+                        f"{a} of {b}" for a, b in
+                        zip(_detail["n_players_valued"], _detail["n_players_total"])
+                    ],
+                })
+                st.dataframe(_detail_display, hide_index=True, use_container_width=True)
+            else:
+                st.caption("No club-level data available for this league.")
+        except Exception as exc:
+            st.error(f"Could not load club breakdown: {exc}")
+
+    with _tab_player:
+        st.caption(
+            "Player-level market values behind the club squad values above. "
+            "Filter to one club to see exactly which players have (or are "
+            "missing) a valuation — this is what actually drives that "
+            "club's total."
+        )
+        try:
+            from aegis.market_value import MarketValueClient as _MVC3, EUR_TO_GBP as _EUR_TO_GBP3
+            _client3 = _MVC3()
+            _club_options = ["All clubs"]
+            _club_id_map = {}
+            _detail3 = _client3.club_squad_values_detailed(tc_data.get("tm_code"))
+            for _, _row3 in _detail3.iterrows():
+                _club_options.append(_row3["club_name"])
+                _club_id_map[_row3["club_name"]] = _row3["club_id"]
+            _selected_club = st.selectbox("Club", _club_options, key="tc_player_club_filter")
+            _club_id_filter = _club_id_map.get(_selected_club)
+
+            _players_df = _client3.player_market_values(tc_data.get("tm_code"), club_id=_club_id_filter)
+            if len(_players_df):
+                _players_display = pd.DataFrame({
+                    "Player": _players_df.get("name", ""),
+                    "Position": _players_df.get("position", ""),
+                    "Club": _players_df.get("current_club_name", ""),
+                    "Market Value": [
+                        f"£{v * _EUR_TO_GBP3 / 1_000_000:.1f}M (€{v / 1_000_000:.1f}M)" if pd.notna(v) else "— no value on record"
+                        for v in _players_df.get("market_value_in_eur", [])
+                    ],
+                })
+                st.dataframe(_players_display, hide_index=True, use_container_width=True, height=500)
+            else:
+                st.caption("No player-level data available for this league.")
+        except Exception as exc:
+            st.error(f"Could not load player breakdown: {exc}")
 
     st.stop()
 

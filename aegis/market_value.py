@@ -221,6 +221,59 @@ class MarketValueClient:
         grouped = players.assign(_mv=values).dropna(subset=["_mv"]).groupby("current_club_id")["_mv"].sum()
         return grouped
 
+    def club_squad_values_detailed(
+        self, tm_league: Optional[str] = None, use_cache: bool = True
+    ) -> pd.DataFrame:
+        """
+        Per-club breakdown with names and data-completeness counts — lets
+        the UI show WHY a club's squad value looks low (e.g. only 3 of 25
+        players have a market value on record) rather than just the
+        resulting number with no explanation.
+
+        Returns a DataFrame: club_id, club_name, squad_value_eur,
+        n_players_valued, n_players_total, sorted by squad_value_eur asc.
+        """
+        players = self.get_players(use_cache=use_cache)
+        if tm_league:
+            players = players[players.get("current_club_domestic_competition_id") == tm_league]
+        clubs = self.get_clubs(use_cache=use_cache)
+        name_map = clubs.set_index("club_id")["name"].to_dict() if "name" in clubs.columns else {}
+
+        values = pd.to_numeric(players.get("market_value_in_eur"), errors="coerce")
+        df = players.assign(_mv=values)
+        agg = df.groupby("current_club_id").agg(
+            squad_value_eur=("_mv", "sum"),
+            n_players_valued=("_mv", lambda s: s.notna().sum()),
+            n_players_total=("_mv", "size"),
+        ).reset_index()
+        agg["club_name"] = agg["current_club_id"].map(name_map).fillna(agg["current_club_id"].astype(str))
+        agg = agg.rename(columns={"current_club_id": "club_id"})
+        agg = agg.sort_values("squad_value_eur", ascending=True).reset_index(drop=True)
+        return agg[["club_id", "club_name", "squad_value_eur", "n_players_valued", "n_players_total"]]
+
+    def player_market_values(
+        self, tm_league: Optional[str] = None, club_id=None, use_cache: bool = True
+    ) -> pd.DataFrame:
+        """
+        Player-level market values for the league (optionally filtered to
+        one club) — the detail behind club_squad_values_detailed, so a low
+        squad-value club can be inspected player by player.
+
+        Returns: player_id, name, position, current_club_name,
+        market_value_in_eur, sorted by market_value_in_eur desc (NaNs last).
+        """
+        players = self.get_players(use_cache=use_cache)
+        if tm_league:
+            players = players[players.get("current_club_domestic_competition_id") == tm_league]
+        if club_id is not None:
+            players = players[players.get("current_club_id") == club_id]
+        out = players.copy()
+        out["market_value_in_eur"] = pd.to_numeric(out.get("market_value_in_eur"), errors="coerce")
+        cols = [c for c in ["player_id", "name", "position", "current_club_name", "market_value_in_eur"]
+                if c in out.columns]
+        out = out[cols].sort_values("market_value_in_eur", ascending=False, na_position="last")
+        return out.reset_index(drop=True)
+
     # -------------------------------------------------------------------
     # Player-level entity resolution (StatsBomb -> Transfermarkt)
     # -------------------------------------------------------------------
