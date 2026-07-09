@@ -1014,23 +1014,42 @@ def _run_single_statsbomb_analysis(
             gap = 75 - avg_fit
             urgency = "Critical" if avg_fit < 45 else "High" if avg_fit < 55 else "Medium"
             if estimate_recruitment_cost_band is not None:
-                cost_low, cost_high = estimate_recruitment_cost_band(
+                band = estimate_recruitment_cost_band(
                     pos_group, competition_id, urgency, _mv_bundle,
                 )
+                cost_low, cost_high = band["cost_low"], band["cost_high"]
+                cost_tier = band["tier"]
+                cost_tier_label = band["tier_label"]
+                cost_tooltip = band["tooltip"]
+                cost_flag_symbol = band["flag_symbol"]
+                cost_flag_class = band["flag_class"]
             else:
                 cost_map = {"GK": (15, 35), "DEF": (25, 55), "MID": (30, 65), "ATT": (35, 75)}
                 cost_low, cost_high = cost_map.get(pos_group, (20, 50))
+                cost_tier = "fallback_generic"
+                cost_tier_label = "generic placeholder"
+                cost_tooltip = ("Not calculated from real transfer data — the "
+                                 "market_value module was unavailable this run.")
+                cost_flag_symbol = "○"
+                cost_flag_class = "cost-flag--fallback"
             timeline = "January" if urgency == "Critical" else "Summer"
             recruitment.append({
                 "position": pos_group, "gap": round(gap, 1),
                 "urgency": urgency, "timeline": timeline,
-                "cost_low": cost_low, "cost_high": cost_high
+                "cost_low": cost_low, "cost_high": cost_high,
+                "cost_tier": cost_tier, "cost_tier_label": cost_tier_label,
+                "cost_tooltip": cost_tooltip,
+                "cost_flag_symbol": cost_flag_symbol, "cost_flag_class": cost_flag_class,
             })
     recruitment.sort(key=lambda x: x["gap"], reverse=True)
     
     if recruitment:
         with open(Config.OUTPUT_DIR / "recruitment_priorities.csv", "w", newline="") as f:
-            writer = _csv.DictWriter(f, fieldnames=["position", "gap", "urgency", "timeline", "cost_low", "cost_high"])
+            writer = _csv.DictWriter(f, fieldnames=[
+                "position", "gap", "urgency", "timeline", "cost_low", "cost_high",
+                "cost_tier", "cost_tier_label", "cost_tooltip",
+                "cost_flag_symbol", "cost_flag_class",
+            ])
             writer.writeheader()
             writer.writerows(recruitment)
     
