@@ -138,7 +138,8 @@ def train_master(base_dir: str, verbose: bool = True) -> bool:
             master.save(verbose=True)
         except Exception as e:
             print(f"  ✗ fit/save failed: {e}")
-            traceback.print_exc()
+            print(traceback.format_exc())
+            sys.stdout.flush()
             return False
 
         # ── Verify output files ───────────────────────────────────────────
@@ -176,7 +177,15 @@ def train_master(base_dir: str, verbose: bool = True) -> bool:
             print(f"  ⚠ Market value training failed — skipping (recruitment costs "
                   f"will fall back to static estimates): {e}")
             print("  Full traceback (for diagnosis — training still continues non-fatally):")
-            traceback.print_exc()
+            # traceback.print_exc() writes to stderr, while every other line in
+            # this file uses print() (stdout). In CI, stdout/stderr are often
+            # buffered and flushed independently, so mixing streams here is
+            # exactly what silently dropped the traceback last run — it
+            # printed the header (stdout) but the actual trace (stderr)
+            # landed somewhere the captured log didn't preserve in order.
+            # format_exc() + print() keeps everything on one stream.
+            print(traceback.format_exc())
+            sys.stdout.flush()
 
         return True
 
