@@ -1,5 +1,5 @@
 {
-  "updated_at": "2026-07-11T08:01:13.748063+00:00",
+  "updated_at": "2026-07-12T08:20:50.867759+00:00",
   "models": [
     {
       "key": "master",
@@ -18,21 +18,21 @@
         318
       ],
       "n_profiles": 440,
-      "trained_at": "2026-07-11T08:01:11.301228+00:00"
+      "trained_at": "2026-07-12T08:20:48.814410+00:00"
     }
   ],
   "market_value_model": {
-    "trained_at": "2026-07-11T08:01:13.692198",
-    "n_train": 13355,
-    "n_test": 2357,
+    "trained_at": "2026-07-12T08:20:50.814346",
+    "n_train": 1896,
+    "n_test": 335,
     "position_map": {
       "Attack": 0,
       "Defender": 1,
       "Goalkeeper": 2,
       "Midfield": 3
     },
-    "mae_eur": 2109419,
-    "median_ape": 0.411,
+    "mae_eur": 1282777,
+    "median_ape": 0.432,
     "feature_cols": [
       "age_at_transfer",
       "position",
