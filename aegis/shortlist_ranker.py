@@ -30,6 +30,7 @@ class ShortlistEntry:
     ideal_xi:                 List[Dict]         = field(default_factory=list)
     recruitment:              List[Dict]         = field(default_factory=list)
     primary_formation:        str                = "4-3-3"
+    dna_source:               str                = "unknown"
     run_result:               Dict               = field(default_factory=dict)
 
 
@@ -132,5 +133,6 @@ def _build_entry(provisional_rank: int, manager: str, result: Dict) -> Shortlist
         ideal_xi                 = result.get("ideal_xi", []),
         recruitment              = result.get("recruitment", []),
         primary_formation        = result.get("primary_formation", "4-3-3"),
+        dna_source                = result.get("manager_dna_source", "unknown"),
         run_result               = result,
     )
