@@ -1980,7 +1980,8 @@ class SquadFitAnalyzer:
         
         return self
     
-    def set_target_manager(self, manager_name: str, verbose: bool = True) -> "SquadFitAnalyzer":
+    def set_target_manager(self, manager_name: str, verbose: bool = True,
+                            season_id: int = None) -> "SquadFitAnalyzer":
         """
         Set the target manager by looking them up in the trained model.
         
@@ -1993,6 +1994,13 @@ class SquadFitAnalyzer:
           2. Last-name match  ("Howe" in "Edward John Frank Howe")
           3. Any-token match  ("Arteta" in "Mikel Arteta Amatriain")
           4. Fail → ValueError
+        
+        A manager can have multiple rows in the training data (one per
+        season). After the name match, rows are narrowed to the requested
+        season_id (falls back to self.season_id if not passed). If that
+        exact season isn't available for this manager, the most recent
+        season on file is used instead — and flagged — rather than
+        silently returning an arbitrary row.
         """
         names = self.df_managers["coach_name"].fillna("")
         
@@ -2030,6 +2038,24 @@ class SquadFitAnalyzer:
                 f"Manager '{manager_name}' not found in model.\n"
                 f"Available: {self.df_managers['coach_name'].tolist()}"
             )
+        
+        # ── Season disambiguation ──
+        # A manager can appear multiple times (once per season). Without
+        # this, .iloc[0] below silently picks whichever row happens to be
+        # first in the CSV, ignoring the season the caller actually asked
+        # for — e.g. Iraola's 2023/24 row instead of his 2025/26 row.
+        effective_season = season_id if season_id is not None else self.season_id
+        if "season_id" in matches.columns and len(matches) > 1:
+            season_matches = matches[matches["season_id"] == effective_season]
+            if not season_matches.empty:
+                matches = season_matches
+            else:
+                matches = matches.sort_values("season_id", ascending=False)
+                if verbose:
+                    available = sorted(matches["season_id"].dropna().unique().tolist())
+                    print(f"  ⚠ No season_id={effective_season} data for "
+                          f"'{matches.iloc[0]['coach_name']}' (available: {available}) "
+                          f"— using most recent season {matches.iloc[0]['season_id']} instead")
         
         manager = matches.iloc[0]
         self.target_manager = manager["coach_name"]

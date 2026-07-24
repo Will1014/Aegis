@@ -800,6 +800,7 @@ def run_full_analysis_statsbomb(
                 output_file=output_file if not is_batch else None,
                 coach_name_override=current_coach,
                 competition_id=primary_league_id,
+                season_id=season_id,
             )
             
             if result:
@@ -876,6 +877,7 @@ def _run_single_statsbomb_analysis(
     output_file: str = None,
     coach_name_override: str = None,
     competition_id: int = None,
+    season_id: int = None,
 ) -> dict:
     """
     Run squad-fit analysis + dashboard for a single (team, coach) combo.
@@ -893,14 +895,14 @@ def _run_single_statsbomb_analysis(
     import csv as _csv
     from collections import defaultdict as _dd
 
-    analyzer = SquadFitAnalyzer()
+    analyzer = SquadFitAnalyzer(season_id=season_id)
     analyzer.load_model()
     
     # Look up the manager in the TRAINING DATA to get their actual tactical profile.
     # This is critical for hypothetical scenarios — "what if Arteta managed Chelsea?"
     # uses Arteta's profile from Arsenal, not Chelsea's current profile.
     try:
-        analyzer.set_target_manager(manager_name)
+        analyzer.set_target_manager(manager_name, season_id=season_id)
     except ValueError:
         # Manager not in training data — fall back to ETL DNA (target team's profile).
         # This is a real limitation, not a detail to bury: it means the score
