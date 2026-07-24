@@ -111,7 +111,9 @@ class AegisVisualizer:
         filename: str = "MTFI_Dashboard.html",
         manager_name: Optional[str] = None,
         target_club: Optional[str] = None,
-        season: str = "2024/25"
+        season: str = "2024/25",
+        season_id: Optional[int] = None,
+        competition_id: Optional[int] = None,
     ):
         """
         Generate MTFI Dashboard v2 with clustering visualization.
@@ -129,6 +131,13 @@ class AegisVisualizer:
             manager_name: Override manager name (auto-detected if None)
             target_club: Override target club (auto-detected if None)
             season: Season label for display
+            season_id: If given, scopes the "Manager Clustering (PCA)" scatter
+                to only this season's rows instead of every manager from every
+                season and league in the training data. The target manager's
+                own row for this season is always kept even if filtering would
+                otherwise drop it (e.g. missing season_id in the CSV).
+            competition_id: If given, further scopes the PCA scatter to this
+                league only.
         
         Returns:
             Path to generated dashboard file
@@ -142,6 +151,23 @@ class AegisVisualizer:
         
         manager_profiles = self._load_csv("manager_profiles.csv")
         cluster_centroids = self._load_csv("cluster_centroids.csv")
+
+        # Scope the PCA scatter to the currently selected league/season
+        # rather than showing every manager from every season and league
+        # on file — previously this was unfiltered.
+        if manager_profiles and (season_id is not None or competition_id is not None):
+            def _matches(row):
+                if season_id is not None and str(row.get("season_id", "")) != str(season_id):
+                    return False
+                if competition_id is not None and str(row.get("competition_id", "")) != str(competition_id):
+                    return False
+                return True
+            filtered = [m for m in manager_profiles if _matches(m)]
+            if filtered:
+                manager_profiles = filtered
+            else:
+                print("  ⚠ No manager_profiles rows matched the selected "
+                      "season/league — showing unfiltered scatter instead")
         squad_fit = self._load_csv("squad_fit_scores.csv")
         ideal_xi = self._load_csv("ideal_xi.csv")
         recruitment = self._load_csv("recruitment_priorities.csv")

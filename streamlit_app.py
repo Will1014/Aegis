@@ -2163,7 +2163,7 @@ if results_b is None and results_a is not None:
 
                 with _col_sim:
                     st.markdown("**Tactically Similar Managers**")
-                    _similar = compute_manager_similarity(mgr_name, _tr_dir)
+                    _similar = compute_manager_similarity(mgr_name, _tr_dir, season_id=season_id)
                     if _similar:
                         st.dataframe(pd.DataFrame(_similar)[
                             ["manager", "team", "similarity_pct", "archetype"]
@@ -2529,7 +2529,7 @@ elif results_b is not None:
                 ]:
                     with _col:
                         st.markdown(f"**Similar to {_mgr}**")
-                        _sim = compute_manager_similarity(_mgr, _cmp_tr_dir)
+                        _sim = compute_manager_similarity(_mgr, _cmp_tr_dir, season_id=season_id)
                         if _sim:
                             st.dataframe(
                                 pd.DataFrame(_sim)[["manager","team","similarity_pct"]].rename(

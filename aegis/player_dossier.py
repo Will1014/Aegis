@@ -778,10 +778,17 @@ class PlayerDossierGenerator:
 
     @staticmethod
     def _ordinal(n: int) -> str:
-        """Return correct ordinal suffix for any integer."""
-        if 11 <= (n % 100) <= 13:
-            return "th"
-        return {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
+        """
+        Suffix appended after a percentile number for display.
+
+        Previously returned an ordinal suffix (1st, 51st, 17th). That reads
+        as a RANK, where "1st" means best — but these are percentiles, where
+        1st percentile means worst (scored below ~99% of peers). Using "%"
+        instead removes that ambiguity: "1%" unambiguously means bottom of
+        the population. Every call site in this file uses this for
+        percentile display, so changing it here covers all of them.
+        """
+        return "%"
 
     @staticmethod
     def _pct_color(pct: int) -> str:
@@ -1607,8 +1614,8 @@ canvas#radarChart {{
             return self._render_gk_profile_bullets(m, p)
 
         physical_bullets = [
-            f"<strong>{'Strong in the air' if p.get('aerial_ratio', 50) > 60 else 'Average aerially'}</strong> — wins {m.get('aerial_ratio', 0):.1f}% of aerial duels ({p.get('aerial_ratio', 50)}{self._ordinal(p.get('aerial_ratio', 50))} percentile).",
-            f"Ball recovery rate of <strong>{m.get('recoveries_p90', 0):.2f} per 90</strong> — ranked {p.get('recoveries_p90', 50)}{self._ordinal(p.get('recoveries_p90', 50))} percentile among positional peers.",
+            f"<strong>{'Strong in the air' if p.get('aerial_ratio', 50) > 60 else 'Average aerially'}</strong> — wins {m.get('aerial_ratio', 0):.1f}% of aerial duels ({p.get('aerial_ratio', 50)}{self._ordinal(p.get('aerial_ratio', 50))}).",
+            f"Ball recovery rate of <strong>{m.get('recoveries_p90', 0):.2f} per 90</strong> — ranked {p.get('recoveries_p90', 50)}{self._ordinal(p.get('recoveries_p90', 50))} among positional peers.",
         ]
         def_bullets = [
             f"Records <strong>{m.get('tackles_p90', 0):.2f} tackles</strong> and <strong>{m.get('interceptions_p90', 0):.2f} interceptions</strong> per 90 minutes.",
@@ -1631,19 +1638,19 @@ canvas#radarChart {{
 
     def _render_gk_profile_bullets(self, m: Dict, p: Dict) -> str:
         shotstop_bullets = [
-            f"<strong>{'Elite' if p.get('save_pct', 50) > 80 else 'Above average' if p.get('save_pct', 50) > 60 else 'Average' if p.get('save_pct', 50) > 40 else 'Below average'} shot-stopper</strong> — saves {m.get('save_pct', 0):.1f}% of shots on target ({p.get('save_pct', 50)}{self._ordinal(p.get('save_pct', 50))} percentile).",
-            f"Goals saved above average of <strong>{m.get('gsaa_p90', 0):.2f} per 90</strong> ({m.get('gsaa_pct', 0):.1f}% GSAA ratio) — ranked {p.get('gsaa_pct', 50)}{self._ordinal(p.get('gsaa_pct', 50))} percentile.",
+            f"<strong>{'Elite' if p.get('save_pct', 50) > 80 else 'Above average' if p.get('save_pct', 50) > 60 else 'Average' if p.get('save_pct', 50) > 40 else 'Below average'} shot-stopper</strong> — saves {m.get('save_pct', 0):.1f}% of shots on target ({p.get('save_pct', 50)}{self._ordinal(p.get('save_pct', 50))}).",
+            f"Goals saved above average of <strong>{m.get('gsaa_p90', 0):.2f} per 90</strong> ({m.get('gsaa_pct', 0):.1f}% GSAA ratio) — ranked {p.get('gsaa_pct', 50)}{self._ordinal(p.get('gsaa_pct', 50))}.",
         ]
         claim_bullets = [
-            f"Claims crosses at <strong>{m.get('clcaa_pct', 0):.1f}%</strong> versus the average goalkeeper's attempt rate ({p.get('clcaa_pct', 50)}{self._ordinal(p.get('clcaa_pct', 50))} percentile).",
-            f"Wins <strong>{m.get('aerial_ratio', 0):.1f}%</strong> of aerial duels ({p.get('aerial_ratio', 50)}{self._ordinal(p.get('aerial_ratio', 50))} percentile).",
+            f"Claims crosses at <strong>{m.get('clcaa_pct', 0):.1f}%</strong> versus the average goalkeeper's attempt rate ({p.get('clcaa_pct', 50)}{self._ordinal(p.get('clcaa_pct', 50))}).",
+            f"Wins <strong>{m.get('aerial_ratio', 0):.1f}%</strong> of aerial duels ({p.get('aerial_ratio', 50)}{self._ordinal(p.get('aerial_ratio', 50))}).",
         ]
         sweep_bullets = [
-            f"Positioning error of <strong>{m.get('positioning_error', 0):.1f}m</strong> from optimal shot-facing position ({p.get('positioning_error', 50)}{self._ordinal(p.get('positioning_error', 50))} percentile — lower is better).",
-            f"Performs defensive actions an average of <strong>{m.get('aggressive_distance', 0):.1f}m</strong> from goal ({p.get('aggressive_distance', 50)}{self._ordinal(p.get('aggressive_distance', 50))} percentile) — {'a proactive sweeper-keeper profile' if p.get('aggressive_distance', 50) > 60 else 'a more traditional shot-stopping profile'}.",
+            f"Positioning error of <strong>{m.get('positioning_error', 0):.1f}m</strong> from optimal shot-facing position ({p.get('positioning_error', 50)}{self._ordinal(p.get('positioning_error', 50))} — lower is better).",
+            f"Performs defensive actions an average of <strong>{m.get('aggressive_distance', 0):.1f}m</strong> from goal ({p.get('aggressive_distance', 50)}{self._ordinal(p.get('aggressive_distance', 50))}) — {'a proactive sweeper-keeper profile' if p.get('aggressive_distance', 50) > 60 else 'a more traditional shot-stopping profile'}.",
         ]
         dist_bullets = [
-            f"Pass accuracy of <strong>{m.get('pass_acc', 0):.1f}%</strong> ({p.get('pass_acc', 50)}{self._ordinal(p.get('pass_acc', 50))} percentile).",
+            f"Pass accuracy of <strong>{m.get('pass_acc', 0):.1f}%</strong> ({p.get('pass_acc', 50)}{self._ordinal(p.get('pass_acc', 50))}).",
             f"Long ball accuracy of <strong>{m.get('long_ball_pct', 0):.1f}%</strong>, attempting <strong>{m.get('long_balls_p90', 0):.1f} long balls per 90</strong>.",
         ]
 

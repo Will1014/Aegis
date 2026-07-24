@@ -1159,7 +1159,11 @@ def _run_single_statsbomb_analysis(
                 safe_club = team_name.replace(" ", "_").replace("&", "and")
                 dashboard_filename = f"{safe_coach}___{safe_club}.html"
             
-            viz.generate_dashboard(filename=dashboard_filename)
+            viz.generate_dashboard(
+                filename=dashboard_filename,
+                season_id=season_id,
+                competition_id=competition_id,
+            )
             print(f"  ✓ Dashboard: {Config.OUTPUT_DIR / dashboard_filename}")
         except Exception as e:
             print(f"  ⚠ Dashboard generation: {e}")

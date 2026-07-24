@@ -30,6 +30,7 @@ def compute_manager_similarity(
     target_name: str,
     training_dir,
     top_n: int = 5,
+    season_id: int = None,
 ) -> List[Dict]:
     """
     Return the top_n most tactically similar managers to target_name.
@@ -43,6 +44,9 @@ def compute_manager_similarity(
         training_dir: Path to directory containing manager_dna_model.pkl
                       and manager_profiles.csv.
         top_n: Number of similar managers to return.
+        season_id: If given, and the matched manager has multiple season
+                   rows, prefer the row for this season (falls back to
+                   their most recent season if not present).
 
     Returns:
         List of dicts with keys: manager, team, archetype, similarity_pct.
@@ -82,13 +86,27 @@ def compute_manager_similarity(
     if not available_cols:
         return []
 
+    # Narrow to the matched manager's row(s), then pick the requested season
+    # (falling back to their most recent) — same disambiguation used in
+    # SquadFitAnalyzer.set_target_manager, so the two stay consistent.
+    matched = df[mask]
+    if "season_id" in matched.columns and len(matched) > 1 and season_id is not None:
+        season_matched = matched[matched["season_id"] == season_id]
+        matched = season_matched if not season_matched.empty else \
+            matched.sort_values("season_id", ascending=False)
+    target_idx = matched.index[0]
+    target_coach_name = df.loc[target_idx, "coach_name"]
+
     X = scaler.transform(df[available_cols].fillna(0).values)
-    target_idx = mask.idxmax()
     target_vec = X[df.index.get_loc(target_idx)]
 
     dists = np.linalg.norm(X - target_vec, axis=1)
-    # Exclude the target manager itself
-    dists[df.index.get_loc(target_idx)] = np.inf
+    # Exclude EVERY row belonging to the target manager — not just the
+    # matched row. A manager has one row per season, so without this their
+    # own other-season rows (which are naturally near-identical to
+    # themselves) show up as "similar managers to themselves".
+    self_mask = (df["coach_name"] == target_coach_name).values
+    dists[self_mask] = np.inf
 
     valid_dists = dists[dists != np.inf]
     if len(valid_dists) == 0:
