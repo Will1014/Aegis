@@ -1172,19 +1172,22 @@ with st.sidebar:
             "League", list(COMPETITION_OPTIONS.keys()), key="d_league")
         d_league_id = COMPETITION_OPTIONS[d_league]
 
-        # Reset player list if league changes
-        if st.session_state.get("d_league_last") != d_league:
+        # Reset player list if league OR season changes. Previously this
+        # only keyed off league, so switching Season while staying on the
+        # same League silently kept showing the old season's player list.
+        _d_cache_key = (d_league, season_id)
+        if st.session_state.get("d_league_last") != _d_cache_key:
             st.session_state.dossier_player_list = []
             st.session_state.dossier_player_positions = {}
-            st.session_state["d_league_last"] = d_league
+            st.session_state["d_league_last"] = _d_cache_key
 
         # Auto-load whenever the list is empty — covers first render and
-        # any league change (which clears it above). No button: this runs
-        # before the Position/Player widgets below, so by the time they're
-        # drawn the list is already populated in the same script pass —
-        # no rerun needed either, unlike the old button-triggered version.
+        # any league/season change (which clears it above). No button: this
+        # runs before the Position/Player widgets below, so by the time
+        # they're drawn the list is already populated in the same script
+        # pass — no rerun needed either, unlike the old button-triggered version.
         if has_creds and not st.session_state.dossier_player_list:
-            with st.spinner(f"Loading players for {d_league}…"):
+            with st.spinner(f"Loading players for {d_league} ({season_label})…"):
                 try:
                     os.environ["SB_USERNAME"] = sb_user
                     os.environ["SB_PASSWORD"] = sb_pass
